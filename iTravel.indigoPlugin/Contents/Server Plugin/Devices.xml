@@ -1,0 +1,595 @@
+<?xml version="1.0"?>
+<!--
+    Purpose is to create a new device type that can be used to store route details from a National Rail datamase
+
+-->
+
+<Devices>
+	<Device type="custom" id="trainTimetable">
+		<Name>National Rail Route</Name>
+		<Field id="stationCode"
+				   type="textfield">
+		</Field>
+		<Field id="destinationCode"
+				   type="textfield"
+				   >
+		</Field>
+		<ConfigUI>
+			<Field id="trainRoute"
+				   type="textfield"
+				   tooltip="Enter a name for this route"
+				   defaultValue="NO ROUTE NAME">
+				<Label>What's the name of this route?:</Label>
+			</Field>
+			<Field id="stationName"
+				   type="menu"
+				   >
+				<Label>What is the starting station?</Label>
+				<List class="self"
+					  filter=""
+					  method="selectStation"
+					  dynamicReload="true"/>
+			</Field>
+			<Field id="destinationName"
+				   type="menu"
+				   >
+				<Label>What is the direct destination or All destinations?</Label>
+				<List class="self"
+					  filter=""
+					  method="selectStation"
+					  dynamicReload="true"/>
+			</Field>
+			<Field id="includeCalling"
+				   type="checkbox"
+				   defaultValue="YES"
+				   >
+				<Label>Include calling points in results?:</Label>
+			</Field>
+			<Field id="routeActive"
+				   type="checkbox"
+				   defaultValue="YES"
+				   >
+				<Label>Refresh route automatically?:</Label>
+			</Field>
+		</ConfigUI>
+		<States>
+		<UiDisplayStateId>deviceStatus</UiDisplayStateId>>
+			<State id="deviceStatus"
+				   readonly="YES">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Status of Departures</TriggerLabel>
+				<ControlPageLabel>Departure Status</ControlPageLabel>
+			</State>
+			<State id="deviceActive"
+				   readonly="YES">
+				<ValueType>Boolean</ValueType>
+				<TriggerLabel>Issue with Train 1</TriggerLabel>
+				<ControlPageLabel>Train 1 issue</ControlPageLabel>
+			</State>
+			<State id="stationLong"
+				   readonly="YES">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Station Name</TriggerLabel>
+				<ControlPageLabel>StationName</ControlPageLabel>
+			</State>
+			<State id="stationCRS"
+				   readonly="YES">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Station Code</TriggerLabel>
+				<ControlPageLabel>Station Code</ControlPageLabel>
+			</State>
+			<State id="destinationCRS"
+				   readonly="YES">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Destination Code</TriggerLabel>
+				<ControlPageLabel>Destination Code</ControlPageLabel>
+			</State>
+			<State id="destinationLong"
+				   readonly="YES">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Destination Name</TriggerLabel>
+				<ControlPageLabel>Destination Name</ControlPageLabel>
+			</State>
+			<State id="timeGenerated"
+				   readonly="YES">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Last updated</TriggerLabel>
+				<ControlPageLabel>Last Updated</ControlPageLabel>
+			</State>
+			<State id="stationMessages"
+				   readonly="YES">
+				<ValueType>String</ValueType>
+				<TriggerLabel>stationMessages</TriggerLabel>
+				<ControlPageLabel>stationMessages</ControlPageLabel>
+			</State>
+			<State id="stationIssues"
+				   readonly="YES">
+				<ValueType>Boolean</ValueType>
+				<TriggerLabel>Station Problems</TriggerLabel>
+				<ControlPageLabel>Station Problems</ControlPageLabel>
+			</State>
+			<State id="train1Dest"
+				   readonly="YES">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Destination Train 1</TriggerLabel>
+				<ControlPageLabel>Destination Train 1</ControlPageLabel>
+			</State>
+			<State id="train1Op"
+				   readonly="YES">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Operator Train 1</TriggerLabel>
+				<ControlPageLabel>Operator Train 1</ControlPageLabel>
+			</State>
+			<State id="train1Sch"
+				   readonly="YES">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Scheduled 1</TriggerLabel>
+				<ControlPageLabel>Scheduled 1</ControlPageLabel>
+			</State>
+			<State id="train1Est"
+				   readonly="YES">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Estimated 1</TriggerLabel>
+				<ControlPageLabel>Estimated 1</ControlPageLabel>
+			</State>
+			<State id="train1Delay"
+				   readonly="YES">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Delay 1</TriggerLabel>
+				<ControlPageLabel>Delay 1</ControlPageLabel>
+			</State>
+			<State id="train1Issue"
+				   readonly="YES">
+				<ValueType>Boolean</ValueType>
+				<TriggerLabel>Issue with Train 1</TriggerLabel>
+				<ControlPageLabel>Train 1 issue</ControlPageLabel>
+			</State>
+			<State id="train1Reason"
+				   readonly="YES">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Reason for Delay Train 1</TriggerLabel>
+				<ControlPageLabel>Reason for Delay Train 1</ControlPageLabel>
+			</State>
+			<State id="train1Calling"
+				   readonly="YES">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Calling Points Train 1</TriggerLabel>
+				<ControlPageLabel>Calling Points Train 1</ControlPageLabel>
+			</State>
+			<State id="train2Dest"
+				   readonly="YES">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Destination Train 2</TriggerLabel>
+				<ControlPageLabel>Destination Train 2</ControlPageLabel>
+			</State>
+			<State id="train2Op"
+				   readonly="YES">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Operator Train 2</TriggerLabel>
+				<ControlPageLabel>Operator Train 2</ControlPageLabel>
+			</State>
+			<State id="train2Sch"
+				   readonly="YES">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Scheduled 2</TriggerLabel>
+				<ControlPageLabel>Scheduled 2</ControlPageLabel>
+			</State>
+			<State id="train2Est"
+				   readonly="YES">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Estimated 2</TriggerLabel>
+				<ControlPageLabel>Estimated 2</ControlPageLabel>
+			</State>
+			<State id="train2Delay"
+				   readonly="YES">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Delay 2</TriggerLabel>
+				<ControlPageLabel>Delay 2</ControlPageLabel>
+			</State>
+			<State id="train2Issue"
+				   readonly="YES">
+				<ValueType>Boolean</ValueType>
+				<TriggerLabel>Issue with Train 2</TriggerLabel>
+				<ControlPageLabel>Train 2 issue</ControlPageLabel>
+			</State>
+			<State id="train2Reason"
+				   readonly="YES">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Reason for Delay Train 2</TriggerLabel>
+				<ControlPageLabel>Reason for Delay Train 2</ControlPageLabel>
+			</State>
+			<State id="train2Calling"
+				   readonly="YES">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Calling Points Train 2</TriggerLabel>
+				<ControlPageLabel>Calling Points Train 2</ControlPageLabel>
+			</State>
+			<State id="train3Dest"
+				   readonly="YES">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Destination Train 3</TriggerLabel>
+				<ControlPageLabel>Destination Train 3</ControlPageLabel>
+			</State>
+			<State id="train3Op"
+				   readonly="YES">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Operator Train 3</TriggerLabel>
+				<ControlPageLabel>Operator Train 3</ControlPageLabel>
+			</State>
+
+			<State id="train3Sch"
+				   readonly="YES">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Scheduled 3</TriggerLabel>
+				<ControlPageLabel>Scheduled 3</ControlPageLabel>
+			</State>
+			<State id="train3Est"
+				   readonly="YES">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Estimated 3</TriggerLabel>
+				<ControlPageLabel>Estimated 3</ControlPageLabel>
+			</State>
+			<State id="train3Delay"
+				   readonly="YES">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Delay 3</TriggerLabel>
+				<ControlPageLabel>Delay 3</ControlPageLabel>
+			</State>
+			<State id="train3Issue"
+				   readonly="YES">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Issue with Train 3</TriggerLabel>
+				<ControlPageLabel>Train 3 issue</ControlPageLabel>
+			</State>
+			<State id="train3Reason"
+				   readonly="YES">
+				<ValueType>Boolean</ValueType>
+				<TriggerLabel>Reason for Delay Train 3</TriggerLabel>
+				<ControlPageLabel>Reason for Delay Train 3</ControlPageLabel>
+			</State>
+			<State id="train3Calling"
+				   readonly="YES">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Calling Points Train 3</TriggerLabel>
+				<ControlPageLabel>Calling Points Train 3</ControlPageLabel>
+			</State>
+			<State id="train4Dest"
+				   readonly="YES">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Destination Train 4</TriggerLabel>
+				<ControlPageLabel>Destination Train 4</ControlPageLabel>
+			</State>
+			<State id="train4Sch"
+				   readonly="YES">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Scheduled 4</TriggerLabel>
+				<ControlPageLabel>Scheduled 4</ControlPageLabel>
+			</State>
+			<State id="train4Op"
+				   readonly="YES">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Operator Train 1</TriggerLabel>
+				<ControlPageLabel>Operator Train 1</ControlPageLabel>
+			</State>
+			<State id="train4Est"
+				   readonly="YES">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Estimated 4</TriggerLabel>
+				<ControlPageLabel>Estimated 4</ControlPageLabel>
+			</State>
+			<State id="train4Delay"
+				   readonly="YES">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Delay 4</TriggerLabel>
+				<ControlPageLabel>Delay 4</ControlPageLabel>
+			</State>
+			<State id="train4Issue"
+				   readonly="YES">
+				<ValueType>Boolean</ValueType>
+				<TriggerLabel>Issue with Train 4</TriggerLabel>
+				<ControlPageLabel>Train 4 issue</ControlPageLabel>
+			</State>
+			<State id="train4Reason"
+				   readonly="YES">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Reason for Delay Train 4</TriggerLabel>
+				<ControlPageLabel>Reason for Delay Train 4</ControlPageLabel>
+			</State>
+			<State id="train4Calling"
+				   readonly="YES">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Calling Points Train 4</TriggerLabel>
+				<ControlPageLabel>Calling Points Train 4</ControlPageLabel>
+			</State>
+			<State id="train5Dest"
+				   readonly="YES">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Destination Train 5</TriggerLabel>
+				<ControlPageLabel>Destination Train 5</ControlPageLabel>
+			</State>
+			<State id="train5Op"
+				   readonly="YES">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Operator Train 5</TriggerLabel>
+				<ControlPageLabel>Operator Train 5</ControlPageLabel>
+			</State>
+			<State id="train5Sch"
+				   readonly="YES">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Scheduled 5</TriggerLabel>
+				<ControlPageLabel>Scheduled 5</ControlPageLabel>
+			</State>
+			<State id="train5Est"
+				   readonly="YES">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Estimated 5</TriggerLabel>
+				<ControlPageLabel>Estimated 5</ControlPageLabel>
+			</State>
+			<State id="train5Delay"
+				   readonly="YES">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Delay 5</TriggerLabel>
+				<ControlPageLabel>Delay 5</ControlPageLabel>
+			</State>
+			<State id="train5Issue"
+				   readonly="YES">
+				<ValueType>Boolean</ValueType>
+				<TriggerLabel>Issue with Train 5</TriggerLabel>
+				<ControlPageLabel>Train 5 issue</ControlPageLabel>
+			</State>
+			<State id="train5Reason"
+				   readonly="YES">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Reason for Delay Train 5</TriggerLabel>
+				<ControlPageLabel>Reason for Delay Train 5</ControlPageLabel>
+			</State>
+			<State id="train5Calling"
+				   readonly="YES">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Calling Points Train 5</TriggerLabel>
+				<ControlPageLabel>Calling Points Train 5</ControlPageLabel>
+			</State>
+			<State id="train6Dest"
+				   readonly="YES">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Destination Train 6</TriggerLabel>
+				<ControlPageLabel>Destination Train 6</ControlPageLabel>
+			</State>
+			<State id="train6Op"
+				   readonly="YES">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Operator Train 6</TriggerLabel>
+				<ControlPageLabel>Operator Train 6</ControlPageLabel>
+			</State>
+			<State id="train6Sch"
+				   readonly="YES">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Scheduled 6</TriggerLabel>
+				<ControlPageLabel>Scheduled 6</ControlPageLabel>
+			</State>
+			<State id="train6Est"
+				   readonly="YES">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Estimated 6</TriggerLabel>
+				<ControlPageLabel>Estimated 6</ControlPageLabel>
+			</State>
+			<State id="train6Delay"
+				   readonly="YES">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Delay 6</TriggerLabel>
+				<ControlPageLabel>Delay 6</ControlPageLabel>
+			</State>
+			<State id="train6Issue"
+				   readonly="YES">
+				<ValueType>Boolean</ValueType>
+				<TriggerLabel>Issue with Train 6</TriggerLabel>
+				<ControlPageLabel>Train 6 issue</ControlPageLabel>
+			</State>
+			<State id="train6Reason"
+				   readonly="YES">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Reason for Delay Train 6</TriggerLabel>
+				<ControlPageLabel>Reason for Delay Train 6</ControlPageLabel>
+			</State>
+			<State id="train6Calling"
+				   readonly="YES">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Calling Points Train 6</TriggerLabel>
+				<ControlPageLabel>Calling Points Train 6</ControlPageLabel>
+			</State>
+			<State id="train7Dest"
+				   readonly="YES">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Destination Train 7</TriggerLabel>
+				<ControlPageLabel>Destination Train 7</ControlPageLabel>
+			</State>
+			<State id="train7Op"
+				   readonly="YES">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Operator Train 7</TriggerLabel>
+				<ControlPageLabel>Operator Train 7</ControlPageLabel>
+			</State>
+			<State id="train7Sch"
+				   readonly="YES">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Scheduled 7</TriggerLabel>
+				<ControlPageLabel>Scheduled 7</ControlPageLabel>
+			</State>
+			<State id="train7Est"
+				   readonly="YES">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Estimated 7</TriggerLabel>
+				<ControlPageLabel>Estimated 7</ControlPageLabel>
+			</State>
+			<State id="train7Delay"
+				   readonly="YES">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Delay 7</TriggerLabel>
+				<ControlPageLabel>Delay 7</ControlPageLabel>
+			</State>
+			<State id="train7Issue"
+				   readonly="YES">
+				<ValueType>Boolean</ValueType>
+				<TriggerLabel>Issue with Train 7</TriggerLabel>
+				<ControlPageLabel>Train 7 issue</ControlPageLabel>
+			</State>
+			<State id="train7Reason"
+				   readonly="YES">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Reason for Delay Train 7</TriggerLabel>
+				<ControlPageLabel>Reason for Delay Train 7</ControlPageLabel>
+			</State>
+			<State id="train7Calling"
+				   readonly="YES">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Calling Points Train 7</TriggerLabel>
+				<ControlPageLabel>Calling Points Train 7</ControlPageLabel>
+			</State>
+			<State id="train8Dest"
+				   readonly="YES">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Destination Train 8</TriggerLabel>
+				<ControlPageLabel>Destination Train 8</ControlPageLabel>
+			</State>
+			<State id="train8Op"
+				   readonly="YES">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Operator Train 8</TriggerLabel>
+				<ControlPageLabel>Operator Train 8</ControlPageLabel>
+			</State>
+			<State id="train8Sch"
+				   readonly="YES">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Scheduled 8</TriggerLabel>
+				<ControlPageLabel>Scheduled 8</ControlPageLabel>
+			</State>
+			<State id="train8Est"
+				   readonly="YES">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Estimated 8</TriggerLabel>
+				<ControlPageLabel>Estimated 8</ControlPageLabel>
+			</State>
+			<State id="train8Delay"
+				   readonly="YES">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Delay 8</TriggerLabel>
+				<ControlPageLabel>Delay 8</ControlPageLabel>
+			</State>
+			<State id="train8Issue"
+				   readonly="YES">
+				<ValueType>Boolean</ValueType>
+				<TriggerLabel>Issue with Train 8</TriggerLabel>
+				<ControlPageLabel>Train 8 issue</ControlPageLabel>
+			</State>
+			<State id="train8Reason"
+				   readonly="YES">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Reason for Delay Train 8</TriggerLabel>
+				<ControlPageLabel>Reason for Delay Train 8</ControlPageLabel>
+			</State>
+			<State id="train8Calling"
+				   readonly="YES">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Calling Points Train 8</TriggerLabel>
+				<ControlPageLabel>Calling Points Train 8</ControlPageLabel>
+			</State>
+			<State id="train9Dest"
+				   readonly="YES">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Destination Train 9</TriggerLabel>
+				<ControlPageLabel>Destination Train 9</ControlPageLabel>
+			</State>
+			<State id="train9Op"
+				   readonly="YES">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Operator Train 9</TriggerLabel>
+				<ControlPageLabel>Operator Train 9</ControlPageLabel>
+			</State>
+			<State id="train9Sch"
+				   readonly="YES">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Scheduled 9</TriggerLabel>
+				<ControlPageLabel>Scheduled 9</ControlPageLabel>
+			</State>
+			<State id="train9Est"
+				   readonly="YES">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Estimated 9</TriggerLabel>
+				<ControlPageLabel>Estimated 9</ControlPageLabel>
+			</State>
+			<State id="train9Delay"
+				   readonly="YES">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Delay 9</TriggerLabel>
+				<ControlPageLabel>Delay 9</ControlPageLabel>
+			</State>
+			<State id="train9Issue"
+				   readonly="YES">
+				<ValueType>Boolean</ValueType>
+				<TriggerLabel>Issue with Train 9</TriggerLabel>
+				<ControlPageLabel>Train 9 issue</ControlPageLabel>
+			</State>
+			<State id="train9Reason"
+				   readonly="YES">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Reason for Delay Train 9</TriggerLabel>
+				<ControlPageLabel>Reason for Delay Train 9</ControlPageLabel>
+			</State>
+			<State id="train9Calling"
+				   readonly="YES">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Calling Points Train 9</TriggerLabel>
+				<ControlPageLabel>Calling Points Train 9</ControlPageLabel>
+			</State>
+			<State id="train10Dest"
+				   readonly="YES">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Destination Train 10</TriggerLabel>
+				<ControlPageLabel>Destination Train 10</ControlPageLabel>
+			</State>
+			<State id="train10Op"
+				   readonly="YES">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Operator Train 10</TriggerLabel>
+				<ControlPageLabel>Operator Train 10</ControlPageLabel>
+			</State>
+			<State id="train10Sch"
+				   readonly="YES">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Scheduled 10</TriggerLabel>
+				<ControlPageLabel>Scheduled 10</ControlPageLabel>
+			</State>
+			<State id="train10Est"
+				   readonly="YES">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Estimated 10</TriggerLabel>
+				<ControlPageLabel>Estimated 10</ControlPageLabel>
+			</State>
+			<State id="train10Delay"
+				   readonly="YES">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Delay 10</TriggerLabel>
+				<ControlPageLabel>Delay 10</ControlPageLabel>
+			</State>
+			<State id="train10Issue"
+				   readonly="YES">
+				<ValueType>Boolean</ValueType>
+				<TriggerLabel>Issue with Train 10</TriggerLabel>
+				<ControlPageLabel>Train 10 issue</ControlPageLabel>
+			</State>
+			<State id="train10Reason"
+				   readonly="YES">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Reason for Delay Train 10</TriggerLabel>
+				<ControlPageLabel>Reason for Delay Train 10</ControlPageLabel>
+			</State>
+			<State id="train10Calling"
+				   readonly="YES">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Calling Points Train 10</TriggerLabel>
+				<ControlPageLabel>Calling Points Train 10</ControlPageLabel>
+			</State>
+		</States>
+		<UiDisplayStateId>deviceStatus</UiDisplayStateId>
+	</Device>
+</Devices>
