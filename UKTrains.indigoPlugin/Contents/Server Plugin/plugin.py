@@ -272,7 +272,7 @@ def formatSpecials(longMessage):
 def routeUpdate(dev, apiAccess, networkrailURL, imagePath, parametersFileName):
 
 	global nationalDebug, pypath
-
+	indigo.debugger()
 	if not dev.enabled and dev.configured:
 		# Device is currently disabled or new so ignore and move on
 		return False
@@ -986,7 +986,7 @@ class Plugin(indigo.PluginBase):
 		self.logger.info('New Log:'+str(time.strftime(time.asctime()))+'\n')
 
 		logTimeNextReset = time.time()+int(3600)
-
+		indigo.debugger()
 		while True:
 			# Get configuration
 			apiKey = self.pluginPrefs.get('darwinAPI', 'NO KEY')
@@ -1123,18 +1123,20 @@ class Plugin(indigo.PluginBase):
 			indigo.server.log('*** Could not open station code file '+stationCodesFile+' ***')
 			errorHandler('CRITICAL FAILURE ** Station Code file missing - '+stationCodesFile)
 			sys.exit(1)
-
+		indigo.debugger()
 		# Extract the data to dictionary
 		# Data format is CRS,Station Name (csv)
+		stationDict = {}
+		stationList = []
 		for line in stations:
 			stationDetails = line
 			stationCRS = stationDetails[:3]
 			stationName = stationDetails[4:].replace('\r\n','')
 
 			# Add to dictionary
-			stationDict={}
+			#
 			stationDict[stationName]=stationName
-
+			stationList.append(stationName)
 		# Close the data file
 		stations.close()
 
@@ -1144,11 +1146,11 @@ class Plugin(indigo.PluginBase):
 			errorHandler('CRITICAL FAILURE ** Station code file empty - '+stationCodesFile)
 			sys.exit(1)
 		indigo.debugger()
-		stationCodeArray = stationDict.items()
+		#stationCodeArray = stationDict.items()
 		#stationCodeArray.sort(key=lambda x: x.get('1'))
 		#jmoistures.sort(key=lambda x: x.get('id'), reverse=True)
 
-		return stationCodeArray
+		return stationList
 
 	def actionRefreshDevice(self, pluginAction, typeId, dev):
 		# This immediately refreshes the device station board information

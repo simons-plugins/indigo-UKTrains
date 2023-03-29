@@ -1,0 +1,5 @@
+['/Users/simon/Documents/PycharmProjects/UK Trains/UKTrains.indigoPlugin/Contents/Server Plugin/text2png.py', '/Users/simon/Documents/iTravel/WATWALtimetable.png', '/Users/simon/Documents/iTravel/WATWALdepartureBoard.txt', '/Users/simon/Documents/PycharmProjects/UK Trains/UKTrains.indigoPlugin/Contents/Server Plugin/trainparameters.txt', 'YES']
+/Users/simon/Documents/iTravel/WATWALtimetable.png
+/Users/simon/Documents/iTravel/WATWALdepartureBoard.txt
+/Users/simon/Documents/PycharmProjects/UK Trains/UKTrains.indigoPlugin/Contents/Server Plugin/trainparameters.txt
+YES
