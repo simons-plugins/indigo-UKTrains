@@ -1006,6 +1006,13 @@ class Plugin(indigo.PluginBase):
 			cpcolour = self.pluginPrefs.get('cpcolour', '#FFF')
 			ticolour = self.pluginPrefs.get('ticolour', '#0FF')
 
+			# Now create a parameters file - this is user changeable in the BETA version
+			parametersFileName = pypath + 'trainparameters.txt'
+			parametersFile = open(parametersFileName, 'w')
+			parametersFile.write(
+				forcolour + ',' + bgcolour + ',' + isscolour + ',' + ticolour + ',' + cpcolour + ',9,3,3,720')
+			parametersFile.close()
+
 			if stationImage:
 				imagePath= self.pluginPrefs.get('imageFilename', '/Users')
 
