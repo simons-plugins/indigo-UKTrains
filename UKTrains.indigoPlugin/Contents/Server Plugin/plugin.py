@@ -50,7 +50,7 @@ except ImportError:
 global nationalDebug,  stationDict
 stationDict = {}
 #todo delete below record
-#errorFile = '/Library/Application Support/Perceptive Automation/Indigo 6/Logs/NationRailErrors.log'
+errorFile = '/Library/Application Support/Perceptive Automation/Indigo 2023.2/Logs/NationRailErrors.log'
 
 global pypath
 global failPYTZ
