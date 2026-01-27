@@ -35,8 +35,8 @@ from subprocess import call
 
 try:
 	import indigo, requirements
-except:
-	print("This programme must be run from inside indigo pro 6")
+except ImportError as e:
+	print(f"This programme must be run from inside indigo pro 6: {e}")
 	sys.exit(0)
 import logging
 
@@ -84,48 +84,48 @@ try:
 	import nredarwin
 	if nationalDebug:
 		indigo.server.log('* Darwin present *', level=logging.INFO)
-except:
-	indigo.server.log("** Couldn't find nredarwin - contact developer or check forums for support **", level=logging.CRITICAL)
+except ImportError as e:
+	indigo.server.log(f"** Couldn't find nredarwin module: {e} - contact developer or check forums for support **", level=logging.CRITICAL)
 	sys.exit(3)
 
 try:
 	import suds
 	if nationalDebug:
 		indigo.server.log('* Suds present *', level=logging.INFO)
-except:
-	indigo.server.log("** Couldn't find suds module - check forums for install process for your system **", level=logging.CRITICAL)
+except ImportError as e:
+	indigo.server.log(f"** Couldn't find suds module: {e} - check forums for install process for your system **", level=logging.CRITICAL)
 	sys.exit(4)
 
 try:
 	import functools
 	if nationalDebug:
 		indigo.server.log('* Functools present *', level=logging.INFO)
-except:
-	indigo.server.log("** Couldn't find functools module - check forums for install process for your system **", level=logging.CRITICAL)
+except ImportError as e:
+	indigo.server.log(f"** Couldn't find functools module: {e} - check forums for install process for your system **", level=logging.CRITICAL)
 	sys.exit(5)
 
 try:
 	import os, logging
 	if nationalDebug:
 		indigo.server.log('* Logging and OS present *', level=logging.INFO)
-except:
-	indigo.server.log("** Couldn't find standard os or logging modules - contact the developer for support **", level=logging.CRITICAL)
+except ImportError as e:
+	indigo.server.log(f"** Couldn't find standard os or logging modules: {e} - contact the developer for support **", level=logging.CRITICAL)
 	sys.exit(6)
 
 try:
 	from nredarwin.webservice import DarwinLdbSession
 	if nationalDebug:
 		indigo.server.log('* Darwin LDBS session ready *', level=logging.INFO)
-except:
-	indigo.server.log("** Error accessing nredarwin webservice - contact developer for support **", level=logging.CRITICAL)
+except ImportError as e:
+	indigo.server.log(f"** Error accessing nredarwin webservice: {e} - contact developer for support **", level=logging.CRITICAL)
 	sys.exit(7)
 
 # Import timezone checker
 try:
 	import pytz
 	failPYTZ = False
-except:
-	indigo.server.log('WARNING - pytz not present times will be in GMT only' , level=logging.INFO)
+except ImportError as e:
+	indigo.server.log(f'WARNING - pytz not present ({e}), times will be in GMT only' , level=logging.INFO)
 	failPYTZ = True
 	pass
 
@@ -315,8 +315,8 @@ def routeUpdate(dev, apiAccess, networkrailURL, imagePath, parametersFileName):
 	stationEndCrs = dev.states['destinationCRS']
 	try:
 		stationBoardDetails = darwinSession.get_station_board(stationStartCrs)
-	except:
-		errorHandler('WARINING ** SOAP resolution failed - will retry later when server less busy **')
+	except (suds.WebFault, Exception) as e:
+		errorHandler(f'WARNING ** SOAP resolution failed: {e} - will retry later when server less busy **')
 		return False # This will generally resolve itself within a min anyway
 
 	# Extract information on station and store
@@ -341,16 +341,16 @@ def routeUpdate(dev, apiAccess, networkrailURL, imagePath, parametersFileName):
 	if stationEndCrs !='ALL':
 		try:
 			stationBoardDetails = darwinSession.get_station_board(stationStartCrs,100,True,False,stationEndCrs)
-		except:
-			errorHandler('WARINING ** SOAP resolution failed - will retry later when server less busy **')
+		except (suds.WebFault, Exception) as e:
+			errorHandler(f'WARNING ** SOAP resolution failed: {e} - will retry later when server less busy **')
 			return False
 	else:
 		# All trains departing
 		# Get the departures board
 		try:
 			stationBoardDetails = darwinSession.get_station_board(stationStartCrs,100,True,False)
-		except:
-			errorHandler('WARINING ** SOAP resolution failed - will retry later when server less busy **')
+		except (suds.WebFault, Exception) as e:
+			errorHandler(f'WARNING ** SOAP resolution failed: {e} - will retry later when server less busy **')
 			return False
 
 	if nationalDebug:
@@ -402,8 +402,8 @@ def routeUpdate(dev, apiAccess, networkrailURL, imagePath, parametersFileName):
 		# Get the service informaiton
 		try:
 			service = darwinSession.get_service_details(destination.service_id)
-		except:
-			errorHandler('WARINING ** SOAP resolution failed - will retry later when server less busy **')
+		except (suds.WebFault, Exception) as e:
+			errorHandler(f'WARNING ** SOAP resolution failed: {e} - will retry later when server less busy **')
 			return False
 
 		# Store the data for an image file if needed
@@ -437,8 +437,8 @@ def routeUpdate(dev, apiAccess, networkrailURL, imagePath, parametersFileName):
 			callingPoints = [cp.location_name for cp in service.subsequent_calling_points]
 			arrivalTimes = [arrival.st for arrival in service.subsequent_calling_points]
 			estimatedTimes = [arrival.et for arrival in service.subsequent_calling_points]
-		except:
-			errorHandler('WARINING ** SOAP failed on Calling Points access - try again later **')
+		except AttributeError as e:
+			errorHandler(f'WARNING ** SOAP failed on Calling Points access: {e} - try again later **')
 			return False
 
 		cpIndex = 0
@@ -455,8 +455,8 @@ def routeUpdate(dev, apiAccess, networkrailURL, imagePath, parametersFileName):
 			except AttributeError:
 				errorHandler('WARNING - Estimated Time for calling point returned NULL - not critical')
 
-			except:
-				errorHandler('WARNING - Estimated Time for calling point - unknown error advise developer')
+			except Exception as e:
+				errorHandler(f'WARNING - Estimated Time for calling point - unknown error: {e} - advise developer')
 
 		cpString = cpString.replace('On time', '')
 
@@ -644,12 +644,12 @@ def nationalRailLogin(wsdl = 'https://lite.realtime.nationalrail.co.uk/OpenLDBWS
 
 		return True, darwin_sesh
 
-	except:
+	except Exception as e:
 		# Login failed. As the user to check details and try again
 		if nationalDebug:
-			indigo.server.log('Login failed - a) API key invalid, b) Dawin Offline or c) No Internet Access - Please check and reload plugin')
+			indigo.server.log(f'Login failed: {e} - a) API key invalid, b) Darwin Offline or c) No Internet Access - Please check and reload plugin')
 
-		errorHandler('WARNING ** Failed to log in to Darwin - check API key and internet connection')
+		errorHandler(f'WARNING ** Failed to log in to Darwin: {e} - check API key and internet connection')
 
 		return False, None
 
