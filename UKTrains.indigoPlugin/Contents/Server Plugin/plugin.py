@@ -72,11 +72,11 @@ def errorHandler(myError):
 	global nationalDebug,  pypath
 
 	if nationalDebug:
-		f = open(errorFile, 'a')
-		f.write('-' * 80 + '\n')
-		f.write('Exception Logged:' + str(time.strftime(time.asctime())) + ' in ' + myError + ' module' + '\n\n')
-		exc_type, exc_value, exc_traceback = sys.exc_info()
-		traceback.print_exception(exc_type, exc_value, exc_traceback,limit=2, file=f)
+		with open(errorFile, 'a') as f:
+			f.write('-' * 80 + '\n')
+			f.write('Exception Logged:' + str(time.strftime(time.asctime())) + ' in ' + myError + ' module' + '\n\n')
+			exc_type, exc_value, exc_traceback = sys.exc_info()
+			traceback.print_exception(exc_type, exc_value, exc_traceback,limit=2, file=f)
 
 
 # Get darwin access modules and other standard dependencies in place
@@ -588,17 +588,15 @@ def routeUpdate(dev, apiAccess, networkrailURL, imagePath, parametersFileName):
 	# Now we can create the image - yay
 	# Create a text file for the image in the location stored
 	trainText = textPath+'/'+stationStartCrs+stationEndCrs+'departureBoard.txt'
-	trainTextFile =  open(trainText,'w')
+	with open(trainText, 'w') as trainTextFile:
+		# Write the Departure board information first
+		trainTextFile.write(departureBoardTitles)
+		trainTextFile.write(departureStatistics)
+		if len(departureMessages.strip()) != 0:
+			trainTextFile.write(departureMessages)
 
-	# Write the Departure board information first
-	trainTextFile.write(departureBoardTitles)
-	trainTextFile.write(departureStatistics)
-	if len(departureMessages.strip()) != 0:
-		trainTextFile.write(departureMessages)
-
-	# Now the stationboard itself
-	trainTextFile.write(stationBoard)
-	trainTextFile.close()
+		# Now the stationboard itself
+		trainTextFile.write(stationBoard)
 
 	# Now run an instance of python with the corrent information to create a file for the Refreshing URL funcitonality
 	if departuresFound:
@@ -611,14 +609,14 @@ def routeUpdate(dev, apiAccess, networkrailURL, imagePath, parametersFileName):
 	# See forum for more details
 	# Create places for the stderror and stdoutput
 	indigo.debugger()
-	outputInfo = open(pypath+'myImageOutput.txt',mode = 'w')
-	errorInfo = open(pypath+'myImageErrors.txt',mode = 'w')
-	if nationalDebug:
-		indigo.server.log('Pypath = '+str(pypath)+'\nError: '+str(errorInfo)+'\nStandard: '+str(outputInfo))
-	parametersFileNameMac = parametersFileName.replace(' ','\ ')
-	imgResult = subprocess.run(['/Library/Frameworks/Python.framework/Versions/Current/bin/python3', pypath+'text2png.py', imageFileName, trainText, parametersFileName, departuresAvailable], stdout=outputInfo, stderr=errorInfo)
+	with open(pypath+'myImageOutput.txt', mode='w') as outputInfo, \
+	     open(pypath+'myImageErrors.txt', mode='w') as errorInfo:
+		if nationalDebug:
+			indigo.server.log('Pypath = '+str(pypath)+'\nError: '+str(errorInfo)+'\nStandard: '+str(outputInfo))
+		parametersFileNameMac = parametersFileName.replace(' ','\ ')
+		imgResult = subprocess.run(['/Library/Frameworks/Python.framework/Versions/Current/bin/python3', pypath+'text2png.py', imageFileName, trainText, parametersFileName, departuresAvailable], stdout=outputInfo, stderr=errorInfo)
 
-	print(imgResult)
+		print(imgResult)
 	return True
 
 def nationalRailLogin(wsdl = 'https://lite.realtime.nationalrail.co.uk/OpenLDBWS/wsdl.aspx',api_key='NO KEY'):
