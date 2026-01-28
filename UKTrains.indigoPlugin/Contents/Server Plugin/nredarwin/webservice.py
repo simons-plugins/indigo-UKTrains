@@ -72,9 +72,9 @@ class DarwinLdbSession(object):
         self._history = history
 
     def _base_query(self):
-        # ZEEP uses service directly, bind to specific port if needed
-        # Darwin WSDL has LDBServiceSoap port
-        return self._soap_client.bind('LDBServiceSoap')
+        # ZEEP 4.x: Access service 'ldb' and bind to port 'LDBServiceSoap'
+        # The Darwin WSDL defines service 'ldb' with port 'LDBServiceSoap'
+        return self._soap_client.bind('ldb', 'LDBServiceSoap')
 
     def get_station_board(
         self,

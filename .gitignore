@@ -12,3 +12,4 @@ htmlcov/
 # Environment files with API keys
 .env
 tests/.env
+.env
