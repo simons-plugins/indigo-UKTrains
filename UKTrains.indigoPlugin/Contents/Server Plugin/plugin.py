@@ -152,7 +152,8 @@ def delayCalc(estTime, arrivalTime):
 	delayMessage = ''
 	trainProblem = False
 
-	if '012'.find(arrivalTime[0]) == -1 or '012'.find(estTime[0]) == -1:
+	# Check if times are valid HH:MM format or special status strings
+	if not arrivalTime or not estTime or arrivalTime[0] not in '012' or estTime[0] not in '012':
 		if arrivalTime.find('On') != -1 or estTime.find('On') != -1:
 			delayMessage = 'On time'
 			trainProblem = False
@@ -424,7 +425,7 @@ def routeUpdate(dev, apiAccess, networkrailURL, imagePath, parametersFileName):
 		dev.updateStateOnServer(trainDelay, value = delayToService[1])
 		dev.updateStateOnServer(trainProblem, value = delayToService[0])
 
-		if 'On Time'.find(delayToService[1]):
+		if 'On Time' in delayToService[1]:
 			dev.updateStateOnServer(trainReason, value = '')
 		else:
 			if trainReason is not None:
