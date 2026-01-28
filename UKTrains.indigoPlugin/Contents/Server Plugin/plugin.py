@@ -60,7 +60,7 @@ try:
 	import indigo
 except ImportError as e:
 	print(f"This programme must be run from inside indigo pro 6: {e}")
-	sys.exit(0)
+	sys.exit(1)
 import constants
 
 try:
@@ -182,9 +182,19 @@ class PluginPaths:
 		# Ensure image output directory exists
 		image_output.mkdir(parents=True, exist_ok=True)
 
-		# Log directory
-		log_dir = Path.home() / 'Library' / 'Application Support' / \
-				  'Perceptive Automation' / 'Indigo 2023.2' / 'Logs'
+		# Log directory - find the current Indigo version dynamically
+		perceptive_dir = Path.home() / 'Library' / 'Application Support' / 'Perceptive Automation'
+
+		# Look for Indigo folders (e.g., "Indigo 2023.2", "Indigo 2024.1", etc.)
+		indigo_folders = sorted([d for d in perceptive_dir.glob('Indigo *') if d.is_dir()], reverse=True)
+
+		if indigo_folders:
+			# Use the most recent version folder
+			log_dir = indigo_folders[0] / 'Logs'
+		else:
+			# Fallback to generic Indigo folder if version-specific not found
+			log_dir = perceptive_dir / 'Indigo' / 'Logs'
+
 		log_dir.mkdir(parents=True, exist_ok=True)
 
 		return cls(
@@ -333,11 +343,12 @@ def errorHandler(error_msg: str):
 		if hasattr(sys.modules['__main__'], 'plugin'):
 			plugin = sys.modules['__main__'].plugin
 			if hasattr(plugin, 'plugin_logger'):
-				plugin.plugin_logger.error(error_msg)
-				# Also log the exception traceback if available
+				# Log the exception traceback if available, otherwise just error
 				exc_info = sys.exc_info()
 				if exc_info[0] is not None:
 					plugin.plugin_logger.exception(error_msg)
+				else:
+					plugin.plugin_logger.error(error_msg)
 				return
 		# Fallback: print to stderr
 		print(f"ERROR: {error_msg}", file=sys.stderr)
@@ -1008,13 +1019,14 @@ def _process_train_services(
 	for train_num, destination in enumerate(services[:constants.MAX_TRAINS_TRACKED], start=1):
 		# Debug logging removed - use plugin instance logger instead
 
-		departures_found = True
-
 		# Fetch full service details from Darwin API
 		service = _fetch_service_details(session, destination.service_id)
 		if service is None:
 			# API call failed, skip this service but continue with others
 			continue
+
+		# Successfully fetched at least one service
+		departures_found = True
 
 		# Update device states for this train
 		_update_train_device_states(dev, train_num, destination, service, include_calling_points)
@@ -1106,7 +1118,6 @@ def routeUpdate(dev, apiAccess, networkrailURL, paths):
 	Returns:
 		True if update successful, False otherwise
 	"""
-	indigo.debugger()
 	if not dev.enabled and dev.configured:
 		# Device is currently disabled or new so ignore and move on
 		return False
@@ -1629,15 +1640,8 @@ class Plugin(indigo.PluginBase):
 			with open(parameters_file, 'w') as f:
 				f.write(f'{forcolour},{bgcolour},{isscolour},{ticolour},{cpcolour},9,3,3,720')
 
-			try:
-				self.pluginPrefs['checkboxDebug']='false'
-				self.pluginPrefs['updaterEmail']=''
-				self.pluginPrefs['updaterEmailsEnabled']='false'
-				self.updater.checkVersionPoll()
-
-			except Exception as e:
-				if self.pluginPrefs.get('checkBoxDebug',False):
-					self.errorLog(f"Update checker error: {e}")
+			# Note: Update checker functionality removed - self.updater was never initialized
+			# If update checking is needed in the future, initialize self.updater in __init__
 
 			# Reset the log?
 			if logTimeNextReset<time.time():
@@ -1745,13 +1749,11 @@ class Plugin(indigo.PluginBase):
 			errorHandler(f'CRITICAL FAILURE ** Station Code file missing - {station_codes_file}')
 			sys.exit(1)
 
-		indigo.debugger()
 		if len(local_station_dict) == 0:
 			# Dictionary is empty - advise user and exit
 			indigo.server.log(f'*** Station File is empty - please reinstall {station_codes_file} ***')
 			errorHandler(f'CRITICAL FAILURE ** Station code file empty - {station_codes_file}')
 			sys.exit(1)
-		indigo.debugger()
 
 		return stationList
 
@@ -1839,7 +1841,6 @@ def text2png(imageFileName, trainTextFile, parametersFileName, departuresAvailab
 
 	# Get the current python path for text files
 	pypath = os.path.realpath(sys.path[0]) + '/'
-	indigo.debugger()
 	# Get the passed parameters in the command line
 
 	# Debug logging removed - this is a subprocess
@@ -1872,17 +1873,16 @@ def text2png(imageFileName, trainTextFile, parametersFileName, departuresAvailab
 	# Extract station and route timetable information
 
 	try:
-		routeInfo = open(trainTextFile, 'r')
+		with open(trainTextFile, 'r') as routeInfo:
+			stationTitles = routeInfo.readline()
+			stationStatistics = routeInfo.readline()
+
+			timeTable = ''
+			for line in routeInfo:
+				timeTable = timeTable + '\n' + line.rstrip('\n')
 	except (IOError, OSError) as e:
 		print(f"Something wrong with the text file {trainTextFile}: {e}")
-		print(sys.exit(22))
-
-	stationTitles = routeInfo.readline()
-	stationStatistics = routeInfo.readline()
-
-	timeTable = ''
-	for fileEntry in trainTextFile:
-		timeTable = timeTable + '\n' + routeInfo.readline()
+		sys.exit(22)
 
 	# Converts timeTable array into a departure board image for display
 	# Work out formatting characters

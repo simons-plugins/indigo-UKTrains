@@ -223,16 +223,17 @@ class TestLiveAPIResponseFormats:
                 # Look for actual time (HH:MM format) instead of "On time"
                 if hasattr(service, 'etd') and ':' in service.etd and \
                    service.etd != service.std:
-                    print(f"\nDelayed service found:")
+                    print("\nDelayed service found:")
                     print(f"  Destination: {service.destination_text}")
                     print(f"  Scheduled: {service.std}")
                     print(f"  Estimated: {service.etd}")
 
                     # Calculate delay manually
                     import plugin
-                    has_problem, delay_msg = plugin.delayCalc(service.etd, service.std)
+                    has_problem, delay_msg = plugin.delayCalc(service.std, service.etd)
                     print(f"  Delay: {delay_msg}")
                     assert has_problem  # Should be marked as problem
+                    assert delay_msg  # Verify delay message is non-empty
                     break
 
 
