@@ -8,3 +8,7 @@ __pycache__/
 htmlcov/
 .coverage
 .pytest_cache/
+
+# Environment files with API keys
+.env
+tests/.env
