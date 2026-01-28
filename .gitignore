@@ -1,0 +1,10 @@
+
+# Python cache files
+__pycache__/
+*.py[cod]
+*.so
+
+# Test coverage
+htmlcov/
+.coverage
+.pytest_cache/

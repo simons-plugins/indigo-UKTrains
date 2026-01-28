@@ -10,12 +10,24 @@ import pytest
 from pathlib import Path
 from unittest.mock import MagicMock, Mock, patch
 
-# Add the plugin directory to the path so we can import modules
+# CRITICAL: Mock indigo module BEFORE adding plugin to path
+# This must happen at import time, not as a fixture, because
+# plugin.py imports indigo at module level
+from mocks.mock_indigo import MockIndigo
+mock_indigo_instance = MockIndigo()
+sys.modules['indigo'] = mock_indigo_instance
+
+# Also mock requirements module
+mock_requirements = MagicMock()
+mock_requirements.requirements_check = Mock()
+sys.modules['requirements'] = mock_requirements
+
+# Now it's safe to add plugin directory to path
 plugin_dir = Path(__file__).parent.parent / "UKTrains.indigoPlugin" / "Contents" / "Server Plugin"
 sys.path.insert(0, str(plugin_dir))
 
 # Import our mocks
-from mocks.mock_indigo import create_mock_indigo, create_mock_device, MockIndigo
+from mocks.mock_indigo import create_mock_indigo, create_mock_device
 from mocks.mock_darwin import (
     create_mock_darwin_session,
     create_on_time_service,

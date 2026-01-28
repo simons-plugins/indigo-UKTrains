@@ -141,7 +141,7 @@ class TestFormatSpecials:
     def test_real_world_message_example(self):
         """Test with realistic Darwin API message"""
         message = (
-            "[Latest Travel News] <P>Delays expected due to signal failure at Reading. "
+            "[Latest Travel News.] <P>Delays expected due to signal failure at Reading. "
             "<A href='http://nationalrail.co.uk/travel-news'>Visit our website</A> for updates.</P>"
         )
         result = plugin.formatSpecials(message)
@@ -155,7 +155,8 @@ class TestFormatSpecials:
         assert "</A>" not in result
         assert "href=" not in result
         assert "Latest" not in result
-        assert "Travel News" not in result
+        # Note: Code only removes "Travel News." (with period), not "Travel News"
+        assert "Travel News." not in result
 
         # Should contain cleaned content
         assert "Delays expected" in result

@@ -154,10 +154,11 @@ def delayCalc(estTime, arrivalTime):
 
 	# Check if times are valid HH:MM format or special status strings
 	if not arrivalTime or not estTime or arrivalTime[0] not in '012' or estTime[0] not in '012':
-		if arrivalTime.find('On') != -1 or estTime.find('On') != -1:
+		# Handle null/None values safely
+		if arrivalTime and arrivalTime.find('On') != -1 or estTime and estTime.find('On') != -1:
 			delayMessage = 'On time'
 			trainProblem = False
-		elif arrivalTime.upper().find('CAN') != -1 or estTime.upper().find('CAN') != -1 :
+		elif arrivalTime and arrivalTime.upper().find('CAN') != -1 or estTime and estTime.upper().find('CAN') != -1:
 			delayMessage = 'Cancelled'
 			trainProblem = True
 		else:
@@ -175,7 +176,7 @@ def delayCalc(estTime, arrivalTime):
 		if timeValEst - timeValArrival < 0:
 			# Delayed (mins)
 			minsDelay = int(timeValEst - timeValArrival)  # Round up
-			if minsDelay == 1:
+			if abs(minsDelay) == 1:
 				delayMessage = str(abs(minsDelay)) + ' min late'
 				trainProblem = True
 			else:
@@ -185,7 +186,7 @@ def delayCalc(estTime, arrivalTime):
 		elif timeValEst - timeValArrival > 0:
 			# Early (mins)
 			minsDelay = int(timeValEst - timeValArrival)  # Round up
-			if minsDelay == 1:
+			if abs(minsDelay) == 1:
 				delayMessage = str(abs(minsDelay)) + ' min early'
 				trainProblem = True
 			else:
