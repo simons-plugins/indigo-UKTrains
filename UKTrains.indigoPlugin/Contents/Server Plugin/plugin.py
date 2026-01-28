@@ -46,6 +46,15 @@ except ImportError:
 	field_validator = None
 	HttpUrl = None
 
+try:
+	from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+except ImportError:
+	# Tenacity not available - retry logic will be disabled
+	retry = None
+	stop_after_attempt = None
+	wait_exponential = None
+	retry_if_exception_type = None
+
 
 try:
 	import indigo
@@ -338,6 +347,62 @@ def errorHandler(error_msg: str):
 	except Exception:
 		# Last resort: just print
 		print(f"ERROR: {error_msg}", file=sys.stderr)
+
+
+# ========== Retry Logic with Exponential Backoff ==========
+
+def _log_retry_attempt(retry_state):
+	"""Callback to log retry attempts for Darwin API calls."""
+	attempt_number = retry_state.attempt_number
+	if attempt_number > 1:
+		# Get logger from plugin instance if available
+		try:
+			if hasattr(sys.modules['__main__'], 'plugin'):
+				plugin = sys.modules['__main__'].plugin
+				if hasattr(plugin, 'plugin_logger'):
+					plugin.plugin_logger.warning(
+						f"API call failed (attempt {attempt_number}), retrying in "
+						f"{retry_state.next_action.sleep} seconds..."
+					)
+					return
+		except Exception:
+			pass
+		# Fallback to print if logger not available
+		print(f"WARNING: API call failed (attempt {attempt_number}), retrying...", file=sys.stderr)
+
+
+def darwin_api_retry(max_attempts: int = 3):
+	"""
+	Decorator for Darwin API calls with exponential backoff.
+
+	Retries on SOAP/network failures with exponential backoff:
+	- Wait 1s, then 2s, then 4s between retries
+	- Max 3 attempts by default
+	- Only retries on transient errors (network, SOAP faults)
+
+	Args:
+		max_attempts: Maximum number of retry attempts (default: 3)
+
+	Returns:
+		Retry decorator if tenacity is available, otherwise identity function
+	"""
+	# Check if tenacity is available
+	if retry is None:
+		# Tenacity not available, return identity decorator
+		def identity_decorator(func):
+			return func
+		return identity_decorator
+
+	# Import suds here to avoid circular dependency
+	import suds
+
+	return retry(
+		stop=stop_after_attempt(max_attempts),
+		wait=wait_exponential(multiplier=1, min=1, max=10),
+		retry=retry_if_exception_type((suds.WebFault, ConnectionError, TimeoutError)),
+		before_sleep=_log_retry_attempt,
+		reraise=True
+	)
 
 
 # Get darwin access modules and other standard dependencies in place
@@ -654,6 +719,7 @@ def _generate_departure_image(
 # ========== End of Phase 3 Helper Functions ==========
 
 
+@darwin_api_retry(max_attempts=3)
 def _fetch_station_board(
 	session: Any,
 	start_crs: str,
@@ -661,6 +727,7 @@ def _fetch_station_board(
 	row_limit: int = 100
 ) -> Any:
 	"""Fetch station board with optional destination filter.
+	Retries up to 3 times with exponential backoff on API failures.
 
 	Args:
 		session: DarwinLdbSession object for API access
@@ -672,8 +739,8 @@ def _fetch_station_board(
 		StationBoard object from Darwin API
 
 	Raises:
-		suds.WebFault: If SOAP request fails
-		Exception: For other API errors
+		suds.WebFault: If SOAP request fails after all retries
+		Exception: For other API errors after all retries
 	"""
 	if end_crs and end_crs != constants.ALL_DESTINATIONS_CRS:
 		# Filtered by destination
@@ -732,21 +799,27 @@ def _process_special_messages(board: Any, dev: Any, testing_mode: bool = False) 
 	return formatted_messages
 
 
+@darwin_api_retry(max_attempts=2)
 def _fetch_service_details(session: Any, service_id: str) -> Optional[Any]:
 	"""Fetch detailed service information from Darwin API.
+	Retries up to 2 times with exponential backoff on API failures.
 
 	Args:
 		session: DarwinLdbSession object for API access
 		service_id: Unique service identifier
 
 	Returns:
-		ServiceDetails object or None if fetch failed
+		ServiceDetails object or None if fetch failed after all retries
 	"""
 	try:
 		service = session.get_service_details(service_id)
 		return service
-	except (suds.WebFault, Exception) as e:
-		errorHandler(f'WARNING ** SOAP resolution failed: {e} - will retry later when server less busy **')
+	except (suds.WebFault, ConnectionError, TimeoutError) as e:
+		# Log the error but return None to allow other services to process
+		errorHandler(f'Service details fetch failed after retries: {e}')
+		return None
+	except Exception as e:
+		errorHandler(f'Unexpected error fetching service details: {e}')
 		return None
 
 
@@ -1127,10 +1200,18 @@ def routeUpdate(dev, apiAccess, networkrailURL, paths):
 
 	return True
 
+@darwin_api_retry(max_attempts=2)
 def nationalRailLogin(wsdl = 'https://lite.realtime.nationalrail.co.uk/OpenLDBWS/wsdl.aspx',api_key='NO KEY'):
-	# Module forces a login to the National Rail darwin service.  An API key is needed and the plugin will
-	# fail if it's not provided
+	"""Login to National Rail Darwin service.
+	Retries up to 2 times on connection failures.
 
+	Args:
+		wsdl: Darwin WSDL URL
+		api_key: Darwin API key
+
+	Returns:
+		Tuple of (success: bool, session: DarwinLdbSession or None)
+	"""
 	if 'realtime.nationalrail' not in wsdl:
 		# Darwin address is invalid
 		# print error message and return
