@@ -27,8 +27,7 @@ except ImportError as e:
 
 def inspect_wsdl():
     """Inspect the Darwin WSDL and list available services"""
-    wsdl = os.getenv('DARWIN_WSDL', 'https://lite.realtime.nationalrail.co.uk/OpenLDBWS/wsdl.aspx')
-    api_key = os.getenv('DARWIN_API_KEY')
+    wsdl = os.getenv('DARWIN_WEBSERVICE_WSDL', 'https://lite.realtime.nationalrail.co.uk/OpenLDBWS/wsdl.aspx')
 
     print(f"Inspecting WSDL: {wsdl}\n")
 

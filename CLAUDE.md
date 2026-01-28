@@ -9,7 +9,7 @@ This is an Indigo home automation plugin that integrates with the UK National Ra
 ## Key Dependencies
 
 - **National Rail Darwin API**: Requires a free API key from National Rail for accessing real-time train data
-- **suds==1.1.2**: SOAP client library for Darwin webservice interaction
+- **zeep>=4.2.1**: SOAP client library for Darwin webservice interaction (ZEEP 4.x required)
 - **pytz==2023.2**: Timezone handling (optional, falls back to GMT if missing)
 - **PIL/Pillow**: Required for generating departure board images (handled via subprocess)
 

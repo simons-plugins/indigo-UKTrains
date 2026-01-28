@@ -7,7 +7,7 @@ This script tests the Darwin API connection and helps identify whether
 the "awaiting update" issue is caused by API problems or code issues.
 
 Usage:
-    1. Create .env file with DARWIN_API_KEY
+    1. Create .env file with DARWIN_WEBSERVICE_API_KEY
     2. Run: python3 diagnose_api.py
 """
 
@@ -57,9 +57,9 @@ def test_api_key():
     """Test 1: Verify API key is available"""
     print_section("TEST 1: Darwin API Key")
 
-    api_key = os.getenv('DARWIN_API_KEY')
+    api_key = os.getenv('DARWIN_WEBSERVICE_API_KEY')
     if not api_key or api_key == 'your_api_key_here':
-        print("❌ DARWIN_API_KEY not found or not set properly")
+        print("❌ DARWIN_WEBSERVICE_API_KEY not found or not set properly")
         print("   Please create .env file with your Darwin API key")
         print("   See .env.example for template")
         return None
@@ -73,7 +73,7 @@ def test_darwin_connection(api_key):
     print_section("TEST 2: Darwin API Connection")
 
     wsdl_url = os.getenv(
-        'DARWIN_WSDL',
+        'DARWIN_WEBSERVICE_WSDL',
         'https://lite.realtime.nationalrail.co.uk/OpenLDBWS/wsdl.aspx'
     )
     print(f"WSDL URL: {wsdl_url}")
