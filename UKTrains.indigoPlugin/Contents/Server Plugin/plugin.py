@@ -734,7 +734,7 @@ class Plugin(indigo.PluginBase):
 			if self.pluginPrefs.get('checkBoxDebug',False):
 				self.errorLog(f"Update checker error: {e}")
 
-		for dev in indigo.devices.values("self"):
+		for dev in indigo.devices.iter("self"):
 			# Now check states
 			dev.stateListOrDisplayStateIdChanged()
 
