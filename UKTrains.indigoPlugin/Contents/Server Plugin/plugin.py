@@ -321,7 +321,7 @@ def routeUpdate(dev, apiAccess, networkrailURL, imagePath, parametersFileName):
 		return False # This will generally resolve itself within a min anyway
 
 	# Extract information on station and store
-	stationBoardName = stationBoardDetails.location_name
+	stationBoardName = getattr(stationBoardDetails, 'location_name', 'Unknown Station')
 	timeGenerated = getUKTime()
 	dev.updateStateOnServer('stationLong',  value = stationBoardName)
 	dev.updateStateOnServer('timeGenerated', value = timeGenerated)
@@ -408,20 +408,25 @@ def routeUpdate(dev, apiAccess, networkrailURL, imagePath, parametersFileName):
 			return False
 
 		# Store the data for an image file if needed
-		destinationDetails = destination.destination_text + ' ' + destination.std + ' ' + destination.etd + ' Operator: ' + str(
-			destination.operator_name)
+		# Use getattr for null safety on all API response attributes
+		dest_text = getattr(destination, 'destination_text', 'Unknown')
+		dest_std = getattr(destination, 'std', '00:00')
+		dest_etd = getattr(destination, 'etd', '00:00')
+		dest_operator = getattr(destination, 'operator_name', 'Unknown')
+
+		destinationDetails = dest_text + ' ' + dest_std + ' ' + dest_etd + ' Operator: ' + str(dest_operator)
 
 		# Add on the delay to the message in the image file
-		destinationDetails += ' ' + delayCalc(destination.std, destination.etd)[1]
+		destinationDetails += ' ' + delayCalc(dest_std, dest_etd)[1]
 
 		# Now physically update the device
-		dev.updateStateOnServer(trainDestination, value = destination.destination_text)
-		dev.updateStateOnServer(trainOperator, value = destination.operator_name)
-		dev.updateStateOnServer(trainSch, value = destination.std)
-		dev.updateStateOnServer(trainEst, value = destination.etd)
+		dev.updateStateOnServer(trainDestination, value = dest_text)
+		dev.updateStateOnServer(trainOperator, value = dest_operator)
+		dev.updateStateOnServer(trainSch, value = dest_std)
+		dev.updateStateOnServer(trainEst, value = dest_etd)
 
 		# Calculate any delay to service
-		delayToService = delayCalc(destination.std, destination.etd)
+		delayToService = delayCalc(dest_std, dest_etd)
 		dev.updateStateOnServer(trainDelay, value = delayToService[1])
 		dev.updateStateOnServer(trainProblem, value = delayToService[0])
 
@@ -435,9 +440,14 @@ def routeUpdate(dev, apiAccess, networkrailURL, imagePath, parametersFileName):
 
 		# Now the calling points
 		try:
-			callingPoints = [cp.location_name for cp in service.subsequent_calling_points]
-			arrivalTimes = [arrival.st for arrival in service.subsequent_calling_points]
-			estimatedTimes = [arrival.et for arrival in service.subsequent_calling_points]
+			# Check if subsequent_calling_points exists and is not None
+			calling_points_list = getattr(service, 'subsequent_calling_points', [])
+			if calling_points_list is None:
+				calling_points_list = []
+
+			callingPoints = [cp.location_name for cp in calling_points_list]
+			arrivalTimes = [arrival.st for arrival in calling_points_list]
+			estimatedTimes = [arrival.et for arrival in calling_points_list]
 		except AttributeError as e:
 			errorHandler(f'WARNING ** SOAP failed on Calling Points access: {e} - try again later **')
 			return False
