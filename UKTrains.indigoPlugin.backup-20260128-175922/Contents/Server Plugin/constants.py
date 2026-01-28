@@ -4,7 +4,6 @@ Constants for UK-Trains Indigo Plugin
 This module defines all magic numbers and configuration constants used throughout
 the plugin, making them easier to maintain and understand.
 """
-import sys
 
 # Train limits
 MAX_TRAINS_TRACKED = 10  # Maximum number of trains to track per device
@@ -50,8 +49,8 @@ ERROR_LOG_FILENAME = 'UKTrainsErrors.log'
 IMAGE_OUTPUT_LOG = 'myImageOutput.txt'
 IMAGE_ERROR_LOG = 'myImageErrors.txt'
 
-# Python executable path - use currently running interpreter
-PYTHON3_PATH = sys.executable
+# Python executable path
+PYTHON3_PATH = '/Library/Frameworks/Python.framework/Versions/Current/bin/python3'
 
 # Special status strings
 STATUS_ON_TIME = 'On time'

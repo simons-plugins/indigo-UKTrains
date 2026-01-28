@@ -97,15 +97,15 @@ fontCallingPoints = pypath+'BoardFonts/MFonts/Hack-RegularOblique.ttf' # Italic
 
 
 # Get the font for the image.  Must be a mono-spaced font for accuracy
-font = ImageFont.load_default() if fontFullPath is None else ImageFont.truetype(fontFullPath, fontsize + 4)
-titleFont = ImageFont.load_default() if fontFullPathTitle is None else ImageFont.truetype(fontFullPathTitle,
+font = ImageFont.load_default() if fontFullPath == None else ImageFont.truetype(fontFullPath, fontsize + 4)
+titleFont = ImageFont.load_default() if fontFullPathTitle == None else ImageFont.truetype(fontFullPathTitle,
                                                                                          fontsize + 12)
-statusFont = ImageFont.load_default() if fontFullPath is None else ImageFont.truetype(fontFullPath, fontsize + 5)
-departFont = ImageFont.load_default() if fontFullPathTitle is None else ImageFont.truetype(fontFullPath,
+statusFont = ImageFont.load_default() if fontFullPath == None else ImageFont.truetype(fontFullPath, fontsize + 5)
+departFont = ImageFont.load_default() if fontFullPathTitle == None else ImageFont.truetype(fontFullPath,
                                                                                          fontsize + 8)
-delayFont = ImageFont.load_default() if fontFullPath is None else ImageFont.truetype(fontFullPath, fontsize + 4)
-callingFont= ImageFont.load_default() if fontFullPath is None else ImageFont.truetype(fontCallingPoints, fontsize+2)
-messagesFont= ImageFont.load_default() if fontFullPath is None else ImageFont.truetype(fontCallingPoints, fontsize)
+delayFont = ImageFont.load_default() if fontFullPath == None else ImageFont.truetype(fontFullPath, fontsize + 4)
+callingFont= ImageFont.load_default() if fontFullPath == None else ImageFont.truetype(fontCallingPoints, fontsize+2)
+messagesFont= ImageFont.load_default() if fontFullPath == None else ImageFont.truetype(fontCallingPoints, fontsize)
 
 # Calculate image size
 timeTable = timeTable.replace('\n', NEWLINE_REPLACEMENT_STRING)

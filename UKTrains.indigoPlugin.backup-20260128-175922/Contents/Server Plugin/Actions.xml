@@ -1,0 +1,10 @@
+<?xml version="1.0"?>
+<!-- By default the NEST thermostat type devices will inherit all
+	 ThermostatAction actions, which will be dispatched to
+	 the actionControlThermostat() method defined in plugin.py.
+	 
+	 The only additional command required is to set the away status
+	 and this is provided below.  Other commands may be added in the future
+-->
+<Actions>
+</Actions>

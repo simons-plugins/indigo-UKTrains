@@ -28,7 +28,7 @@
 ###############################################################################################
 
 # Get system modules
-import os, sys, time, datetime, traceback, re
+import os, sys, time, datetime,traceback
 import subprocess
 from subprocess import call
 from dataclasses import dataclass
@@ -561,26 +561,28 @@ def formatSpecials(longMessage: str) -> str:
 	maxLength = 130
 	maxLines = 2
 
-	# Remove HTML tags and special entities using regex
-	html_pattern = re.compile(r'<[^>]+>')
-	entity_pattern = re.compile(r'&[a-z]+;?')
+	# Remove the non breaking spaces
+	nonBreakingSpace = '&nbsp'
+	longMessage = longMessage.replace(nonBreakingSpace,' ')
+	longMessage = longMessage.replace('\n','')
 
-	# Remove HTML tags
-	longMessage = html_pattern.sub('', longMessage)
-	# Remove HTML entities (e.g., &nbsp;, &amp;)
-	longMessage = entity_pattern.sub(' ', longMessage)
-	# Remove newlines
-	longMessage = longMessage.replace('\n', '')
+	# Look at a more generic way to do this
+	longMessage = longMessage.replace('<P>','')
+	longMessage = longMessage.replace('</P>','')
+	longMessage = longMessage.replace('<A>','')
+	longMessage = longMessage.replace('</A>','')
+	longMessage = longMessage.replace('href=','')
+	longMessage = longMessage.replace('http','')
+	longMessage = longMessage.replace('://','www.')
+	longMessage = longMessage.replace('"','')
+	longMessage = longMessage.replace('Travel News.','')
+	longMessage = longMessage.replace('Latest','')
+	longMessage = longMessage.replace('<A ','')
+	longMessage = longMessage.replace('>','')
 
-	# Clean up specific text patterns
-	longMessage = longMessage.replace('href=', '')
-	longMessage = longMessage.replace('http', '')
-	longMessage = longMessage.replace('://', 'www.')
-	longMessage = longMessage.replace('"', '')
-	longMessage = longMessage.replace('Travel News.', '')
-	longMessage = longMessage.replace('Latest', '')
-	longMessage = longMessage.replace('[', '')
-	longMessage = longMessage.replace(']', '')
+	# Now remove the []s
+	longMessage = longMessage.replace('[','')
+	longMessage = longMessage.replace(']','')
 
 	# Ok now break up the message if required
 	returnMessage = ''
@@ -1594,7 +1596,7 @@ class Plugin(indigo.PluginBase):
 			if self.pluginPrefs.get('checkBoxDebug',False):
 				self.errorLog(f"Update checker error: {e}")
 
-		for dev in indigo.devices.values("self"):
+		for dev in indigo.devices.itervalues("self"):
 			# Now check states
 			dev.stateListOrDisplayStateIdChanged()
 
@@ -1893,13 +1895,13 @@ def text2png(imageFileName, trainTextFile, parametersFileName, departuresAvailab
 	fontCallingPoints = pypath + 'BoardFonts/MFonts/Hack-RegularOblique.ttf'  # Italic
 
 	# Get the font for the image.  Must be a mono-spaced font for accuracy
-	font = ImageFont.load_default() if fontFullPath is None else ImageFont.truetype(fontFullPath, fontsize + 4)
-	titleFont = ImageFont.load_default() if fontFullPathTitle is None else ImageFont.truetype(fontFullPathTitle, fontsize + 12)
-	statusFont = ImageFont.load_default() if fontFullPath is None else ImageFont.truetype(fontFullPath, fontsize + 5)
-	departFont = ImageFont.load_default() if fontFullPathTitle is None else ImageFont.truetype(fontFullPath, fontsize + 8)
-	delayFont = ImageFont.load_default() if fontFullPath is None else ImageFont.truetype(fontFullPath, fontsize + 4)
-	callingFont = ImageFont.load_default() if fontFullPath is None else ImageFont.truetype(fontCallingPoints, fontsize + 2)
-	messagesFont = ImageFont.load_default() if fontFullPath is None else ImageFont.truetype(fontCallingPoints, fontsize)
+	font = ImageFont.load_default() if fontFullPath == None else ImageFont.truetype(fontFullPath, fontsize + 4)
+	titleFont = ImageFont.load_default() if fontFullPathTitle == None else ImageFont.truetype(fontFullPathTitle, fontsize + 12)
+	statusFont = ImageFont.load_default() if fontFullPath == None else ImageFont.truetype(fontFullPath, fontsize + 5)
+	departFont = ImageFont.load_default() if fontFullPathTitle == None else ImageFont.truetype(fontFullPath, fontsize + 8)
+	delayFont = ImageFont.load_default() if fontFullPath == None else ImageFont.truetype(fontFullPath, fontsize + 4)
+	callingFont = ImageFont.load_default() if fontFullPath == None else ImageFont.truetype(fontCallingPoints, fontsize + 2)
+	messagesFont = ImageFont.load_default() if fontFullPath == None else ImageFont.truetype(fontCallingPoints, fontsize)
 
 	# Calculate image size
 	timeTable = timeTable.replace('\n', NEWLINE_REPLACEMENT_STRING)
