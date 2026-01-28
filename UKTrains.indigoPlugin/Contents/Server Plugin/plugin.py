@@ -136,6 +136,77 @@ class PluginConfig:
 	pytz_available: bool
 
 
+@dataclass
+class PluginPaths:
+	"""Centralized path management for UK-Trains plugin"""
+
+	plugin_root: Path
+	fonts_dir: Path
+	station_codes_file: Path
+	image_output_dir: Path
+	log_dir: Path
+
+	@classmethod
+	def initialize(cls, plugin_path: str, user_image_path: Optional[str] = None) -> 'PluginPaths':
+		"""
+		Initialize plugin paths with validation.
+
+		Args:
+			plugin_path: Root path of plugin bundle
+			user_image_path: User-configured image output directory
+
+		Returns:
+			Initialized PluginPaths object
+		"""
+		root = Path(plugin_path)
+
+		# Standard plugin directories
+		fonts = root / 'BoardFonts' / 'MFonts'
+		station_codes = root / constants.STATION_CODES_FILE
+
+		# User-configurable image output
+		if user_image_path:
+			image_output = Path(user_image_path)
+		else:
+			image_output = Path.home() / 'Documents' / 'IndigoImages'
+
+		# Ensure image output directory exists
+		image_output.mkdir(parents=True, exist_ok=True)
+
+		# Log directory
+		log_dir = Path.home() / 'Library' / 'Application Support' / \
+				  'Perceptive Automation' / 'Indigo 2023.2' / 'Logs'
+		log_dir.mkdir(parents=True, exist_ok=True)
+
+		return cls(
+			plugin_root=root,
+			fonts_dir=fonts,
+			station_codes_file=station_codes,
+			image_output_dir=image_output,
+			log_dir=log_dir
+		)
+
+	def get_image_path(self, start_crs: str, end_crs: str) -> Path:
+		"""Get path for departure board image"""
+		return self.image_output_dir / f'{start_crs}{end_crs}timetable.png'
+
+	def get_text_path(self, start_crs: str, end_crs: str) -> Path:
+		"""Get path for departure board text file"""
+		return self.image_output_dir / f'{start_crs}{end_crs}departureBoard.txt'
+
+	def get_parameters_file(self) -> Path:
+		"""Get path for image generation parameters"""
+		return self.plugin_root / 'trainparameters.txt'
+
+	def get_output_log(self) -> Path:
+		"""Get path for image generation output log"""
+		return self.plugin_root / constants.IMAGE_OUTPUT_LOG
+
+	def get_error_log(self) -> Path:
+		"""Get path for image generation error log"""
+		return self.plugin_root / constants.IMAGE_ERROR_LOG
+
+
 # ========== Pydantic Configuration Models ==========
 
 if BaseModel is not None:
@@ -512,7 +583,7 @@ def _update_station_issues_flag(dev: Any) -> None:
 
 
 def _write_departure_board_text(
-	text_path: str,
+	text_path: Path,
 	station_start: str,
 	station_end: str,
 	titles: str,
@@ -523,7 +594,7 @@ def _write_departure_board_text(
 	"""Write formatted departure board to text file.
 
 	Args:
-		text_path: Full path to output text file
+		text_path: Full path to output text file (Path object)
 		station_start: Starting station CRS code
 		station_end: Destination station CRS code
 		titles: Column titles string
@@ -541,19 +612,19 @@ def _write_departure_board_text(
 
 
 def _generate_departure_image(
-	plugin_path: str,
-	image_filename: str,
-	text_filename: str,
-	parameters_filename: str,
+	plugin_root: Path,
+	image_filename: Path,
+	text_filename: Path,
+	parameters_filename: Path,
 	departures_available: bool
 ) -> subprocess.CompletedProcess:
 	"""Launch subprocess to generate PNG image from text file.
 
 	Args:
-		plugin_path: Path to plugin directory
-		image_filename: Path where PNG will be saved
-		text_filename: Path to input text file
-		parameters_filename: Path to parameters configuration file
+		plugin_root: Path to plugin root directory (Path object)
+		image_filename: Path where PNG will be saved (Path object)
+		text_filename: Path to input text file (Path object)
+		parameters_filename: Path to parameters configuration file (Path object)
 		departures_available: Boolean indicating if departures exist
 
 	Returns:
@@ -561,14 +632,18 @@ def _generate_departure_image(
 	"""
 	dep_flag = 'YES' if departures_available else 'NO'
 
-	with open(f'{plugin_path}{constants.IMAGE_OUTPUT_LOG}', 'w') as output_file, \
-	     open(f'{plugin_path}{constants.IMAGE_ERROR_LOG}', 'w') as error_file:
+	# Use Path objects for subprocess files
+	output_log = plugin_root / constants.IMAGE_OUTPUT_LOG
+	error_log = plugin_root / constants.IMAGE_ERROR_LOG
+
+	with open(output_log, 'w') as output_file, \
+	     open(error_log, 'w') as error_file:
 		result = subprocess.run(
 			[constants.PYTHON3_PATH,
-			 f'{plugin_path}text2png.py',
-			 image_filename,
-			 text_filename,
-			 parameters_filename,
+			 str(plugin_root / 'text2png.py'),
+			 str(image_filename),
+			 str(text_filename),
+			 str(parameters_filename),
 			 dep_flag],
 			stdout=output_file,
 			stderr=error_file
@@ -942,8 +1017,19 @@ def _format_station_board(
 	return station_board
 
 
-def routeUpdate(dev, apiAccess, networkrailURL, imagePath, parametersFileName):
+def routeUpdate(dev, apiAccess, networkrailURL, paths):
+	"""
+	Update train departure device with latest information from Darwin API.
 
+	Args:
+		dev: Indigo device object
+		apiAccess: Darwin API key
+		networkrailURL: Darwin WSDL URL
+		paths: PluginPaths object with all file paths
+
+	Returns:
+		True if update successful, False otherwise
+	"""
 	indigo.debugger()
 	if not dev.enabled and dev.configured:
 		# Device is currently disabled or new so ignore and move on
@@ -987,7 +1073,7 @@ def routeUpdate(dev, apiAccess, networkrailURL, imagePath, parametersFileName):
 
 	# Initialize image content array
 	image_content = ['Destination,Sch,Est,By']
-	image_filename = f'{imagePath}/{stationStartCrs}{stationEndCrs}timetable.png'
+	image_filename = paths.get_image_path(stationStartCrs, stationEndCrs)
 
 	# Process all train services
 	include_calling_points = dev.pluginProps.get('includeCalling', False)
@@ -1017,7 +1103,7 @@ def routeUpdate(dev, apiAccess, networkrailURL, imagePath, parametersFileName):
 	)
 
 	# Write departure board text file
-	train_text_file = f'{imagePath}/{stationStartCrs}{stationEndCrs}departureBoard.txt'
+	train_text_file = paths.get_text_path(stationStartCrs, stationEndCrs)
 	_write_departure_board_text(
 		train_text_file,
 		station_start=stationStartCrs,
@@ -1030,11 +1116,12 @@ def routeUpdate(dev, apiAccess, networkrailURL, imagePath, parametersFileName):
 
 	# Generate PNG image from text file
 	indigo.debugger()
+	parameters_file = paths.get_parameters_file()
 	_generate_departure_image(
-		_MODULE_PYPATH,
+		paths.plugin_root,
 		image_filename,
 		train_text_file,
-		parametersFileName,
+		parameters_file,
 		departures_available=departures_found
 	)
 
@@ -1078,12 +1165,13 @@ class Plugin(indigo.PluginBase):
 
 		self.validatePrefsConfigUi(pluginPrefs)
 
-		# Create structured logger
-		log_dir = Path.home() / 'Library' / 'Application Support' / 'Perceptive Automation' / 'Indigo 2023.2' / 'Logs'
-		log_dir.mkdir(parents=True, exist_ok=True)
+		# Initialize paths first
+		user_image_path = pluginPrefs.get('imageFilename')
+		self.paths = PluginPaths.initialize(_MODULE_PYPATH.rstrip('/'), user_image_path)
 
+		# Create structured logger using paths object
 		debug_enabled = pluginPrefs.get('checkboxDebug1', False)
-		self.plugin_logger = PluginLogger(pluginId, log_dir, debug_enabled)
+		self.plugin_logger = PluginLogger(pluginId, self.paths.log_dir, debug_enabled)
 		self.plugin_logger.info(f"{pluginDisplayName} v{pluginVersion} initializing")
 
 		# Validate configuration using Pydantic
@@ -1224,18 +1312,25 @@ class Plugin(indigo.PluginBase):
 					errorDict["showAlertText"] = "You must enter a path for your image (e.g. /Users/myIndigo) - no trailing '/'"
 					return (False, devProps, errorDict)
 
-
+				# Validate path using pathlib
 				try:
+					image_path = Path(devProps['imageFilename'])
 					if self.config.debug:
-						self.plugin_logger.debug('Trying to create file '+devProps['imageFilename']+'/filecheck.txt')
+						self.plugin_logger.debug(f'Validating image path: {image_path}')
 
-					f=open(devProps['imageFilename']+'/filecheck.txt','w')
-					f.close()
-				except (IOError, OSError) as e:
+					# Ensure directory exists or can be created
+					image_path.mkdir(parents=True, exist_ok=True)
+
+					# Test write permissions
+					test_file = image_path / 'filecheck.txt'
+					with open(test_file, 'w') as f:
+						f.write('test')
+					test_file.unlink()  # Remove test file
+				except (IOError, OSError, PermissionError) as e:
 					# Can't open file in location report error to user
 					errorDict = indigo.Dict()
 					errorDict["imageFilename"] = "Invalid path for image files"
-					errorDict["showAlertText"] = "You must enter a valid path for your image (e.g. /Users/myIndigo) - no trailing '/'"
+					errorDict["showAlertText"] = f"Cannot write to path (e.g. /Users/myIndigo) - no trailing '/': {e}"
 					return (False, devProps, errorDict)
 
 			else:
@@ -1432,10 +1527,6 @@ class Plugin(indigo.PluginBase):
 			refreshFreq = int(self.pluginPrefs.get('updateFreq','60'))
 			self.config.debug = self.pluginPrefs.get('checkboxDebug1', False)
 
-			fontFullPath = str(self.config.plugin_path)+'BoardFonts/MFonts/Lekton-Bold.ttf' # Regular
-			fontFullPathTitle = str(self.config.plugin_path)+'BoardFonts/MFonts/sui generis rg.ttf' # Bold Title
-			fontCallingPoints = str(self.config.plugin_path)+'BoardFonts/MFonts/Hack-RegularOblique.ttf' # Italic
-
 			# Get colours for display or defaults
 			forcolour = self.pluginPrefs.get('forcolour', '#0F0')
 			bgcolour = self.pluginPrefs.get('bgcolour', '#000')
@@ -1443,24 +1534,16 @@ class Plugin(indigo.PluginBase):
 			cpcolour = self.pluginPrefs.get('cpcolour', '#FFF')
 			ticolour = self.pluginPrefs.get('ticolour', '#0FF')
 
-			# Now create a parameters file - this is user changeable in the BETA version
-			parametersFileName = str(self.config.plugin_path) + 'trainparameters.txt'
-			parametersFile = open(parametersFileName, 'w')
-			parametersFile.write(
-				forcolour + ',' + bgcolour + ',' + isscolour + ',' + ticolour + ',' + cpcolour + ',9,3,3,720')
-			parametersFile.close()
+			# Update image path if it changed in preferences
+			user_image_path = self.pluginPrefs.get('imageFilename')
+			if user_image_path and stationImage:
+				# User changed image path, reinitialize paths
+				self.paths = PluginPaths.initialize(_MODULE_PYPATH.rstrip('/'), user_image_path)
 
-			if stationImage:
-				imagePath= self.pluginPrefs.get('imageFilename', '/Users')
-
-				# Now create a parameters file - this is user changeable in the BETA version
-				parametersFileName = str(self.config.plugin_path)+'trainparameters.txt'
-				parametersFile = open(parametersFileName,'w')
-				parametersFile.write(forcolour+','+bgcolour+','+isscolour+','+ticolour+','+cpcolour+',9,3,3,720')
-				parametersFile.close()
-
-			else:
-				imagePath = 'No Image'
+			# Create parameters file using pathlib
+			parameters_file = self.paths.get_parameters_file()
+			with open(parameters_file, 'w') as f:
+				f.write(f'{forcolour},{bgcolour},{isscolour},{ticolour},{cpcolour},9,3,3,720')
 
 			try:
 				self.pluginPrefs['checkboxDebug']='false'
@@ -1474,11 +1557,10 @@ class Plugin(indigo.PluginBase):
 
 			# Reset the log?
 			if logTimeNextReset<time.time():
-				f = open(str(self.config.error_log_path),'w')
-				f.write('#'*80+'\n')
-				f.write('Log reset:'+str(time.strftime(time.asctime()))+'\n')
-				f.write('#'*80+'\n')
-				f.close()
+				with open(self.config.error_log_path, 'w') as f:
+					f.write('#'*80+'\n')
+					f.write('Log reset:'+str(time.strftime(time.asctime()))+'\n')
+					f.write('#'*80+'\n')
 				logReset = False
 				logTimeNextReset = time.time()+int(3600)
 
@@ -1502,7 +1584,7 @@ class Plugin(indigo.PluginBase):
 					dev.updateStateOnServer('destinationCRS',value = dev.pluginProps['destinationCode'])
 
 					# Update the device with the latest information
-					deviceRefresh = routeUpdate(dev, apiKey, darwinURL, imagePath, parametersFileName)
+					deviceRefresh = routeUpdate(dev, apiKey, darwinURL, self.paths)
 
 					if not deviceRefresh:
 						# Update failed - probably due to SOAP server timeout
@@ -1556,42 +1638,36 @@ class Plugin(indigo.PluginBase):
 		# Refresh the station codes from file
 		self.config.station_dict = {}
 
-		# Open the station codes file
-		stationCodesFile = str(self.config.plugin_path)+'/stationCodes.txt'
+		# Open the station codes file using pathlib
+		station_codes_file = self.paths.station_codes_file
 
 		try:
-			stations = open(stationCodesFile,"r")
+			with open(station_codes_file, "r") as stations:
+				# Extract the data to dictionary
+				# Data format is CRS,Station Name (csv)
+				local_station_dict = {}
+				stationList = []
+				for line in stations:
+					stationDetails = line
+					stationCRS = stationDetails[:3]
+					stationName = stationDetails[4:].replace('\r\n','')
+
+					# Add to dictionary
+					local_station_dict[stationName]=stationName
+					stationList.append(stationName)
 		except (IOError, OSError) as e:
 			# Couldn't find stations file - advise user and exit
-			self.plugin_logger.error(f"*** Could not open station code file {stationCodesFile}: {e} ***")
-			errorHandler('CRITICAL FAILURE ** Station Code file missing - '+stationCodesFile)
+			self.plugin_logger.error(f"*** Could not open station code file {station_codes_file}: {e} ***")
+			errorHandler(f'CRITICAL FAILURE ** Station Code file missing - {station_codes_file}')
 			sys.exit(1)
+
 		indigo.debugger()
-		# Extract the data to dictionary
-		# Data format is CRS,Station Name (csv)
-		local_station_dict = {}
-		stationList = []
-		for line in stations:
-			stationDetails = line
-			stationCRS = stationDetails[:3]
-			stationName = stationDetails[4:].replace('\r\n','')
-
-			# Add to dictionary
-			#
-			local_station_dict[stationName]=stationName
-			stationList.append(stationName)
-		# Close the data file
-		stations.close()
-
 		if len(local_station_dict) == 0:
 			# Dictionary is empty - advise user and exit
-			indigo.server.log('*** Station File is empty - please reinstall '+stationCodesFile+' ***')
-			errorHandler('CRITICAL FAILURE ** Station code file empty - '+stationCodesFile)
+			indigo.server.log(f'*** Station File is empty - please reinstall {station_codes_file} ***')
+			errorHandler(f'CRITICAL FAILURE ** Station code file empty - {station_codes_file}')
 			sys.exit(1)
 		indigo.debugger()
-		#stationCodeArray = local_station_dict.items()
-		#stationCodeArray.sort(key=lambda x: x.get('1'))
-		#jmoistures.sort(key=lambda x: x.get('id'), reverse=True)
 
 		return stationList
 
@@ -1610,34 +1686,30 @@ class Plugin(indigo.PluginBase):
 		# Refresh the station codes from file
 		localStationDict = {}
 
-		# Open the station codes file
-		stationCodesFile = str(self.config.plugin_path)+'/stationCodes.txt'
+		# Open the station codes file using pathlib
+		station_codes_file = self.paths.station_codes_file
 
 		try:
-			stations = open(stationCodesFile,"r")
+			with open(station_codes_file, "r") as stations:
+				# Extract the data to dictionary
+				# Data format is CRS,Station Name (csv)
+				for line in stations:
+					stationDetails = line
+					stationCRS = stationDetails[:3]
+					stationName = stationDetails[4:].replace('\r\n','')
+
+					# Add to dictionary
+					localStationDict[stationName]=stationCRS
 		except (IOError, OSError) as e:
 			# Couldn't find stations file - advise user and exit
-			self.plugin_logger.error(f"*** Could not open station code file {stationCodesFile}: {e} ***")
-			errorHandler('CRITICAL FAILURE ** Station Code file missing - '+stationCodesFile)
+			self.plugin_logger.error(f"*** Could not open station code file {station_codes_file}: {e} ***")
+			errorHandler(f'CRITICAL FAILURE ** Station Code file missing - {station_codes_file}')
 			sys.exit(1)
-
-		# Extract the data to dictionary
-		# Data format is CRS,Station Name (csv)
-		for line in stations:
-			stationDetails = line
-			stationCRS = stationDetails[:3]
-			stationName = stationDetails[4:].replace('\r\n','')
-
-			# Add to dictionary
-			localStationDict[stationName]=stationCRS
-
-		# Close the data file
-		stations.close()
 
 		if len(localStationDict) == 0:
 			# Dictionary is empty - advise user and exit
-			self.plugin_logger.error('*** Station File is empty - please reinstall '+stationCodesFile+' ***')
-			errorHandler('CRITICAL FAILURE ** Station code file empty - '+stationCodesFile)
+			self.plugin_logger.error(f'*** Station File is empty - please reinstall {station_codes_file} ***')
+			errorHandler(f'CRITICAL FAILURE ** Station code file empty - {station_codes_file}')
 			sys.exit(1)
 
 		return localStationDict
