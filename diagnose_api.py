@@ -201,9 +201,9 @@ def test_refactored_code():
 
         # Test nationalRailLogin
         print("\nTesting nationalRailLogin()...")
-        api_key = os.getenv('DARWIN_API_KEY')
+        api_key = os.getenv('DARWIN_WEBSERVICE_API_KEY')
         wsdl_url = os.getenv(
-            'DARWIN_WSDL',
+            'DARWIN_WEBSERVICE_WSDL',
             'https://lite.realtime.nationalrail.co.uk/OpenLDBWS/wsdl.aspx'
         )
 
