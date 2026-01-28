@@ -49,36 +49,36 @@ class TestDelayCalc:
 
     def test_late_5_minutes(self):
         """Test service running 5 minutes late"""
-        # estTime=14:25 (train will arrive), arrivalTime=14:30 (scheduled) -> 5 min late
-        has_problem, message = plugin.delayCalc("14:25", "14:30")
+        # scheduled=14:30, estimated=14:35 -> 5 mins late
+        has_problem, message = plugin.delayCalc("14:30", "14:35")
         assert has_problem is True
         assert message == "5 mins late"
 
     def test_late_1_minute(self):
         """Test service running 1 minute late (singular)"""
-        # estTime=14:29, arrivalTime=14:30 -> 1 min late
-        has_problem, message = plugin.delayCalc("14:29", "14:30")
+        # scheduled=14:30, estimated=14:31 -> 1 min late
+        has_problem, message = plugin.delayCalc("14:30", "14:31")
         assert has_problem is True
         assert message == "1 min late"
 
     def test_late_20_minutes(self):
         """Test service running 20 minutes late"""
-        # estTime=15:25, arrivalTime=15:45 -> 20 min late
+        # scheduled=15:25, estimated=15:45 -> 20 mins late
         has_problem, message = plugin.delayCalc("15:25", "15:45")
         assert has_problem is True
         assert message == "20 mins late"
 
     def test_early_3_minutes(self):
         """Test service running 3 minutes early"""
-        # estTime=16:03, arrivalTime=16:00 -> 3 min early
-        has_problem, message = plugin.delayCalc("16:03", "16:00")
+        # scheduled=16:00, estimated=15:57 -> 3 mins early
+        has_problem, message = plugin.delayCalc("16:00", "15:57")
         assert has_problem is True
         assert message == "3 mins early"
 
     def test_early_1_minute(self):
         """Test service running 1 minute early (singular)"""
-        # estTime=16:01, arrivalTime=16:00 -> 1 min early
-        has_problem, message = plugin.delayCalc("16:01", "16:00")
+        # scheduled=16:00, estimated=15:59 -> 1 min early
+        has_problem, message = plugin.delayCalc("16:00", "15:59")
         assert has_problem is True
         assert message == "1 min early"
 
@@ -99,7 +99,7 @@ class TestDelayCalc:
 
     def test_early_morning_delayed(self):
         """Test early morning service delayed"""
-        # estTime=06:20, arrivalTime=06:30 -> 10 min late
+        # scheduled=06:20, estimated=06:30 -> 10 mins late
         has_problem, message = plugin.delayCalc("06:20", "06:30")
         assert has_problem is True
         assert message == "10 mins late"
@@ -140,30 +140,30 @@ class TestDelayCalc:
 
     def test_large_delay_60_minutes(self):
         """Test very large delay"""
-        # estTime=15:00, arrivalTime=16:00 -> 60 min late
+        # scheduled=15:00, estimated=16:00 -> 60 mins late
         has_problem, message = plugin.delayCalc("15:00", "16:00")
         assert has_problem is True
         assert message == "60 mins late"
 
     def test_peak_hours_calculation(self):
         """Test calculation during peak hours (2x:xx format)"""
-        # estTime=21:25, arrivalTime=21:30 -> 5 min late
+        # scheduled=21:25, estimated=21:30 -> 5 mins late
         has_problem, message = plugin.delayCalc("21:25", "21:30")
         assert has_problem is True
         assert message == "5 mins late"
 
-    @pytest.mark.parametrize("estimated,scheduled,expected_problem,expected_msg", [
+    @pytest.mark.parametrize("scheduled,estimated,expected_problem,expected_msg", [
         ("10:00", "10:00", False, "On Time"),
-        ("09:55", "10:00", True, "5 mins late"),
-        ("10:05", "10:00", True, "5 mins early"),
-        ("On time", "10:00", False, "On time"),
-        ("Cancelled", "10:00", True, "Cancelled"),
-        ("Delayed", "10:00", True, "Delayed"),
+        ("10:00", "10:05", True, "5 mins late"),
+        ("10:00", "09:55", True, "5 mins early"),
+        ("10:00", "On time", False, "On time"),
+        ("10:00", "Cancelled", True, "Cancelled"),
+        ("10:00", "Delayed", True, "Delayed"),
     ])
-    def test_common_scenarios(self, estimated, scheduled, expected_problem, expected_msg):
+    def test_common_scenarios(self, scheduled, estimated, expected_problem, expected_msg):
         """Parametrized test for common scenarios"""
-        # Note: Function signature is delayCalc(estTime, arrivalTime)
-        has_problem, message = plugin.delayCalc(estimated, scheduled)
+        # Note: Function signature is delayCalc(scheduled_time, estimated_time)
+        has_problem, message = plugin.delayCalc(scheduled, estimated)
         assert has_problem == expected_problem
         assert message == expected_msg
 

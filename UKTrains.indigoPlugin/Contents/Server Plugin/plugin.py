@@ -465,27 +465,31 @@ def getUKTime() -> str:
 		lonTime = datetime.datetime.now(timeZone)
 		return lonTime.strftime('%a %H:%M:%S')+' UK Time'
 
-def delayCalc(estTime: str, arrivalTime: str) -> Tuple[bool, str]:
+def delayCalc(scheduled_time: str, estimated_time: str) -> Tuple[bool, str]:
 	"""Calculate delay between scheduled and estimated times.
 
 	Args:
-		estTime: Estimated time string (HH:MM format or status like "On time")
-		arrivalTime: Scheduled arrival time string (HH:MM format or status)
+		scheduled_time: Scheduled time string (HH:MM format or status)
+		estimated_time: Estimated time string (HH:MM format or status like "On time")
 
 	Returns:
 		Tuple of (has_problem: bool, message: str)
+
+	Note:
+		If estimated_time > scheduled_time: train is late
+		If estimated_time < scheduled_time: train is early
 	"""
 	# Calculates time different between two times of the form HH:MM or handles On Time, Cancelled or Delayed message
 	delayMessage = ''
 	trainProblem = False
 
 	# Check if times are valid HH:MM format or special status strings
-	if not arrivalTime or not estTime or arrivalTime[0] not in '012' or estTime[0] not in '012':
+	if not scheduled_time or not estimated_time or scheduled_time[0] not in '012' or estimated_time[0] not in '012':
 		# Handle null/None values safely
-		if arrivalTime and 'On' in arrivalTime or estTime and 'On' in estTime:
+		if scheduled_time and 'On' in scheduled_time or estimated_time and 'On' in estimated_time:
 			delayMessage = 'On time'
 			trainProblem = False
-		elif arrivalTime and 'CAN' in arrivalTime.upper() or estTime and 'CAN' in estTime.upper():
+		elif scheduled_time and 'CAN' in scheduled_time.upper() or estimated_time and 'CAN' in estimated_time.upper():
 			delayMessage = 'Cancelled'
 			trainProblem = True
 		else:
@@ -493,33 +497,32 @@ def delayCalc(estTime: str, arrivalTime: str) -> Tuple[bool, str]:
 			trainProblem = True
 	else:
 		# It's a time so calculate the delay
-		# Convert both to seconds
-		ha, ma = [int(i) for i in arrivalTime.split(':')]
-		timeValArrival = ha * 60 + ma
-		he, me = [int(i) for i in estTime.split(':')]
-		timeValEst = he * 60 + me
+		# Convert both to minutes
+		hs, ms = [int(i) for i in scheduled_time.split(':')]
+		timeValScheduled = hs * 60 + ms
+		he, me = [int(i) for i in estimated_time.split(':')]
+		timeValEstimated = he * 60 + me
 
-		# Check difference
-		if timeValEst - timeValArrival < 0:
-			# Delayed (mins)
-			minsDelay = int(timeValEst - timeValArrival)  # Round up
-			if abs(minsDelay) == 1:
-				delayMessage = str(abs(minsDelay)) + ' min late'
-				trainProblem = True
-			else:
-				delayMessage = str(abs(minsDelay)) + ' mins late'
-				trainProblem = True
+		# Check difference: positive means late, negative means early
+		delay_minutes = timeValEstimated - timeValScheduled
 
-		elif timeValEst - timeValArrival > 0:
-			# Early (mins)
-			minsDelay = int(timeValEst - timeValArrival)  # Round up
-			if abs(minsDelay) == 1:
-				delayMessage = str(abs(minsDelay)) + ' min early'
-				trainProblem = True
+		if delay_minutes < 0:
+			# Train is early (estimated < scheduled)
+			if abs(delay_minutes) == 1:
+				delayMessage = '1 min early'
 			else:
-				delayMessage = str(abs(minsDelay)) + ' mins early'
-				trainProblem = True
+				delayMessage = f'{abs(delay_minutes)} mins early'
+			trainProblem = True
+
+		elif delay_minutes > 0:
+			# Train is late (estimated > scheduled)
+			if delay_minutes == 1:
+				delayMessage = '1 min late'
+			else:
+				delayMessage = f'{delay_minutes} mins late'
+			trainProblem = True
 		else:
+			# On time (estimated == scheduled)
 			delayMessage = 'On Time'
 			trainProblem = False
 
