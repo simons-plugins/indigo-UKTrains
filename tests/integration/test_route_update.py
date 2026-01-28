@@ -248,7 +248,7 @@ class TestRouteUpdateIntegration:
 
 
 @pytest.mark.integration
-class TestRouteUpdateWithCalling Points:
+class TestRouteUpdateWithCallingPoints:
     """Test route update with calling point information"""
 
     def test_calling_points_included(self, mock_device, mock_darwin_normal):

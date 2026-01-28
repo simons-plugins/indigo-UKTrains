@@ -39,6 +39,7 @@ except ImportError as e:
 	print(f"This programme must be run from inside indigo pro 6: {e}")
 	sys.exit(0)
 import logging
+import constants
 
 try:
 	import pytz
@@ -271,6 +272,105 @@ def formatSpecials(longMessage):
 		indigo.server.log('Return message = '+returnMessage)
 	return returnMessage
 
+
+# ========== Phase 3 Refactoring: Extracted Helper Functions ==========
+
+def _clear_device_states(dev):
+	"""
+	Clear all train states on device before update.
+
+	Args:
+		dev: Indigo device object to clear
+	"""
+	# Clear all train data (up to MAX_TRAINS_TRACKED)
+	for trainNum in range(1, constants.MAX_TRAINS_TRACKED + 1):
+		train_prefix = f'train{trainNum}'
+		dev.updateStateOnServer(f'{train_prefix}Dest', value='')
+		dev.updateStateOnServer(f'{train_prefix}Sch', value='')
+		dev.updateStateOnServer(f'{train_prefix}Est', value='')
+		dev.updateStateOnServer(f'{train_prefix}Delay', value='')
+		dev.updateStateOnServer(f'{train_prefix}Issue', value=False)
+		dev.updateStateOnServer(f'{train_prefix}Reason', value='')
+		dev.updateStateOnServer(f'{train_prefix}Calling', value='')
+
+	# Clear station issues flag
+	dev.updateStateOnServer('stationIssues', value=False)
+
+
+def _update_station_issues_flag(dev):
+	"""
+	Check if any train has issues and update station-level flag.
+
+	Args:
+		dev: Indigo device object to update
+	"""
+	# Check all trains for issues
+	for trainNum in range(1, constants.MAX_TRAINS_TRACKED + 1):
+		train_issue_state = f'train{trainNum}Issue'
+		if dev.states.get(train_issue_state, False):
+			dev.updateStateOnServer('stationIssues', value=True)
+			return
+	# If we get here, no issues found
+	dev.updateStateOnServer('stationIssues', value=False)
+
+
+def _write_departure_board_text(text_path, station_start, station_end,
+                                 titles, statistics, messages, board_content):
+	"""
+	Write formatted departure board to text file.
+
+	Args:
+		text_path: Full path to output text file
+		station_start: Starting station CRS code
+		station_end: Destination station CRS code
+		titles: Column titles string
+		statistics: Statistics/timestamp string
+		messages: Special NRCC messages (may be empty)
+		board_content: Main board content with train listings
+	"""
+	with open(text_path, 'w') as f:
+		f.write(f"{station_start} to {station_end}\n")
+		f.write(titles)
+		f.write(statistics)
+		if messages:
+			f.write(messages)
+		f.write(board_content)
+
+
+def _generate_departure_image(plugin_path, image_filename, text_filename,
+                               parameters_filename, departures_available):
+	"""
+	Launch subprocess to generate PNG image from text file.
+
+	Args:
+		plugin_path: Path to plugin directory
+		image_filename: Path where PNG will be saved
+		text_filename: Path to input text file
+		parameters_filename: Path to parameters configuration file
+		departures_available: Boolean indicating if departures exist
+
+	Returns:
+		subprocess.CompletedProcess result
+	"""
+	dep_flag = 'YES' if departures_available else 'NO'
+
+	with open(f'{plugin_path}{constants.IMAGE_OUTPUT_LOG}', 'w') as output_file, \
+	     open(f'{plugin_path}{constants.IMAGE_ERROR_LOG}', 'w') as error_file:
+		result = subprocess.run(
+			[constants.PYTHON3_PATH,
+			 f'{plugin_path}text2png.py',
+			 image_filename,
+			 text_filename,
+			 parameters_filename,
+			 dep_flag],
+			stdout=output_file,
+			stderr=error_file
+		)
+	return result
+
+
+# ========== End of Phase 3 Helper Functions ==========
+
 def routeUpdate(dev, apiAccess, networkrailURL, imagePath, parametersFileName):
 
 	global nationalDebug, pypath
@@ -287,28 +387,8 @@ def routeUpdate(dev, apiAccess, networkrailURL, imagePath, parametersFileName):
 
 	darwinSession = accessLogin[1]
 
-	# Accessed database - now update details
-	# First clear all previous data
-	for trainNum in range(1,11):
-		trainDestination = 'train'+str(trainNum)+'Dest'
-		trainSch = 'train'+str(trainNum)+'Sch'
-		trainEst = 'train'+str(trainNum)+'Est'
-		trainDelay = 'train'+str(trainNum)+'Delay'
-		trainIssue = 'train'+str(trainNum)+'Issue'
-		trainReason = 'train'+str(trainNum)+'Reason'
-		trainCalling = 'train'+str(trainNum)+'Calling'
-
-		# Update the device to blank
-		dev.updateStateOnServer(trainDestination, value = '')
-		dev.updateStateOnServer(trainSch, value = '')
-		dev.updateStateOnServer(trainEst, value = '')
-		dev.updateStateOnServer(trainDelay, value = '')
-		dev.updateStateOnServer(trainIssue, value = False)
-		dev.updateStateOnServer(trainReason, value = '')
-		dev.updateStateOnServer(trainCalling, value = '')
-
-	# Ok now set the station issues flag to No
-	dev.updateStateOnServer('stationIssues', value = False)
+	# Clear all previous train data on device
+	_clear_device_states(dev)
 
 	# Ok - now let's get the real data and store it
 
@@ -516,14 +596,8 @@ def routeUpdate(dev, apiAccess, networkrailURL, imagePath, parametersFileName):
 					if len(remainingLine.strip()) != 0:
 						imageContent.append('>>> '+remainingLine)
 
-	# Ok - now just check if there is an issue on one of the trains at this station and flag if necessary
-	for trainNum in range(1,11):
-		trainProblem = 'train'+str(trainNum)+'Issue'
-		if dev.states[trainProblem]:
-			# There is an issue with at least one train so flag the station
-			dev.updateStateOnServer('stationIssues', value = True)
-			# No need to check any more field
-			break
+	# Update station-level issues flag based on train states
+	_update_station_issues_flag(dev)
 
 	# Create Image
 	titleSeparator = '\n'+'-'*80+'\n'
@@ -597,18 +671,17 @@ def routeUpdate(dev, apiAccess, networkrailURL, imagePath, parametersFileName):
 		dev.updateStateOnServer('stationMessages', value = specialMessages)
 
 	# Ready to create image from information
-	# Now we can create the image - yay
-	# Create a text file for the image in the location stored
+	# Create a text file for the departure board
 	trainText = textPath+'/'+stationStartCrs+stationEndCrs+'departureBoard.txt'
-	with open(trainText, 'w') as trainTextFile:
-		# Write the Departure board information first
-		trainTextFile.write(departureBoardTitles)
-		trainTextFile.write(departureStatistics)
-		if len(departureMessages.strip()) != 0:
-			trainTextFile.write(departureMessages)
-
-		# Now the stationboard itself
-		trainTextFile.write(stationBoard)
+	_write_departure_board_text(
+		trainText,
+		station_start=stationStartCrs,
+		station_end=stationEndCrs,
+		titles=departureBoardTitles,
+		statistics=departureStatistics,
+		messages=departureMessages,
+		board_content=stationBoard
+	)
 
 	# Now run an instance of python with the corrent information to create a file for the Refreshing URL funcitonality
 	if departuresFound:
@@ -616,19 +689,17 @@ def routeUpdate(dev, apiAccess, networkrailURL, imagePath, parametersFileName):
 	else:
 		departuresAvailable = 'NO'
 
-	# Now we can call the subprocess to manage the conversion and move onto the next image
-	# We run a fresh python image which means that the current environment variables are maintained for shared files
-	# See forum for more details
-	# Create places for the stderror and stdoutput
+	# Generate PNG image from text file using subprocess
 	indigo.debugger()
-	with open(pypath+'myImageOutput.txt', mode='w') as outputInfo, \
-	     open(pypath+'myImageErrors.txt', mode='w') as errorInfo:
-		if nationalDebug:
-			indigo.server.log('Pypath = '+str(pypath)+'\nError: '+str(errorInfo)+'\nStandard: '+str(outputInfo))
-		parametersFileNameMac = parametersFileName.replace(' ','\ ')
-		imgResult = subprocess.run(['/Library/Frameworks/Python.framework/Versions/Current/bin/python3', pypath+'text2png.py', imageFileName, trainText, parametersFileName, departuresAvailable], stdout=outputInfo, stderr=errorInfo)
-
-		print(imgResult)
+	imgResult = _generate_departure_image(
+		pypath,
+		imageFileName,
+		trainText,
+		parametersFileName,
+		departures_available=(departuresAvailable == 'YES')
+	)
+	if nationalDebug:
+		indigo.server.log(f'Image generation result: {imgResult}')
 	return True
 
 def nationalRailLogin(wsdl = 'https://lite.realtime.nationalrail.co.uk/OpenLDBWS/wsdl.aspx',api_key='NO KEY'):
