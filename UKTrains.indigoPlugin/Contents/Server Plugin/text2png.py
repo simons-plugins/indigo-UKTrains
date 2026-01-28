@@ -14,8 +14,8 @@ import os, sys
 # Import the graphic conversion files
 try:
     import PIL
-except:
-    print ('** PILLOW or PIL  must be installed')
+except ImportError as e:
+    print(f"** PILLOW or PIL must be installed: {e}")
     sys.exit(21)
 
 # Now get the key modules we're using on this occasion
@@ -45,7 +45,7 @@ print(parametersFileName)
 print(departuresAvailable)
 
 
-if departuresAvailable.find('YES') != -1:
+if 'YES' in departuresAvailable:
     trainsFound = True
 else:
     trainsFound = False
@@ -74,8 +74,8 @@ width = int(parameterSplit[8])
 
 try:
     routeInfo = open(trainTextFile, 'r')
-except:
-    print('Something wrong with the text file!'+trainTextFile)
+except (IOError, OSError) as e:
+    print(f"Something wrong with the text file {trainTextFile}: {e}")
     print(sys.exit(22))
 
 stationTitles = routeInfo.readline()
@@ -87,7 +87,7 @@ for fileEntry in trainTextFile:
 
 # Converts timeTable array into a departure board image for display
 # Work out formatting characters
-REPLACEMENT_CHARACTER = u'ZZFZ'
+REPLACEMENT_CHARACTER = 'ZZFZ'
 NEWLINE_REPLACEMENT_STRING = ' ' + REPLACEMENT_CHARACTER + ' '
 
 # Get the fonts for the board
@@ -110,16 +110,16 @@ messagesFont= ImageFont.load_default() if fontFullPath == None else ImageFont.tr
 # Calculate image size
 timeTable = timeTable.replace('\n', NEWLINE_REPLACEMENT_STRING)
 lines = []
-line = u""
+line = ""
 
 for word in timeTable.split():
     # Check to see if the word is longer than the possible size of image
     if word == REPLACEMENT_CHARACTER:  # give a blank line
         lines.append(line[1:].replace('-', ' '))  # slice the white space in the begining of the line
-        line = u""
-    # lines.append( u"" ) #the blank line
+        line = ""
+    # lines.append( "" ) #the blank line
 
-    elif line.find('++') != -1:
+    elif '++' in line:
         # This is a status line and can be longer
         # Width is controlled in the main plugin
         line += ' ' + word
@@ -168,7 +168,7 @@ noMoreTrains = False
 for line in lines:
 
     # Is this the titles line for the columns?
-    if line.find('Destination') != -1:
+    if 'Destination' in line:
 
         # Column titles in cyan
         y += int(line_height*0.5)
@@ -180,31 +180,31 @@ for line in lines:
         y += (line_height/2+0.5)
         pass
 
-    elif line.find('**') != -1:
+    elif '**' in line:
         # No trains found message
         draw.text((leftpadding+10, y), line, isscolour, font=statusFont)
         y += line_height*1.2
 
-    elif line.find('++') != -1:
+    elif '++' in line:
         # Station Messages found
         draw.text((leftpadding+10, y), line.replace('+',''), isscolour, font=messagesFont)
         y += int(line_height*0.5)
 
-    elif line.find('Status') != -1:
+    elif 'Status' in line:
         draw.text((leftpadding, y), line, ticolour, font=delayFont)
         # y += line_height
 
-    elif line.find('>') == -1:
+    elif '>' not in line:
         if noMoreTrains:
             # Don't process this one onwards
             break
 
         # Draw a destination with details
-        if line.find('On time') != - 1:
+        if 'On time' in line:
             # Train is running on time
             draw.text((leftpadding, y), line, forcolour, font=departFont)
 
-        elif line.find('Special') != -1:
+        elif 'Special' in line:
             draw.text((leftpadding, y), line, forcolour, font=callingFont)
 
         else:

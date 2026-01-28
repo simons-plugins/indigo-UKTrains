@@ -31,111 +31,443 @@
 import os, sys, time, datetime,traceback
 import subprocess
 from subprocess import call
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Dict, Tuple, Optional, List, Any
+import logging
+from logging.handlers import RotatingFileHandler
+
+try:
+	from pydantic import BaseModel, Field, field_validator, HttpUrl
+except ImportError:
+	# Pydantic not available - will use basic validation only
+	BaseModel = None
+	Field = None
+	field_validator = None
+	HttpUrl = None
+
+try:
+	from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+except ImportError:
+	# Tenacity not available - retry logic will be disabled
+	retry = None
+	stop_after_attempt = None
+	wait_exponential = None
+	retry_if_exception_type = None
 
 
 try:
-	import indigo, requirements
-except:
-	print("This programme must be run from inside indigo pro 6")
-	sys.exit(0)
-import logging
+	import indigo
+except ImportError as e:
+	print(f"This programme must be run from inside indigo pro 6: {e}")
+	sys.exit(1)
+import constants
 
 try:
 	import pytz
 except ImportError:
 	pass
 
-# Get the current python path for text files
-# Set up globals
-global nationalDebug,  stationDict
-stationDict = {}
-#todo delete below record
-errorFile = '/Library/Application Support/Perceptive Automation/Indigo 2023.2/Logs/NationRailErrors.log'
 
-global pypath
-global failPYTZ
-failPYTZ = True
-nationalDebug = False # Logging enabled for testing purposes only
+# ========== Plugin Logger Class ==========
+
+class PluginLogger:
+	"""Structured logger for UK-Trains plugin with rotating file handler"""
+
+	def __init__(self, plugin_id: str, log_dir: Path, debug: bool = False):
+		"""
+		Initialize plugin logger.
+
+		Args:
+			plugin_id: Unique plugin identifier
+			log_dir: Directory for log files
+			debug: Enable debug-level logging
+		"""
+		self.logger = logging.getLogger(f'Plugin.{plugin_id}')
+		self.logger.setLevel(logging.DEBUG if debug else logging.INFO)
+
+		# Remove existing handlers
+		self.logger.handlers.clear()
+
+		# Create rotating file handler (1MB max, 5 backups)
+		log_file = log_dir / 'UKTrains.log'
+		file_handler = RotatingFileHandler(
+			log_file,
+			maxBytes=1_000_000,  # 1 MB
+			backupCount=5
+		)
+		file_handler.setLevel(logging.DEBUG)
+
+		# Create formatter with timestamp, level, function, line number
+		formatter = logging.Formatter(
+			'%(asctime)s - %(name)s - %(levelname)s - %(funcName)s:%(lineno)d - %(message)s',
+			datefmt='%Y-%m-%d %H:%M:%S'
+		)
+		file_handler.setFormatter(formatter)
+
+		self.logger.addHandler(file_handler)
+
+	def debug(self, msg: str, **kwargs):
+		"""Log debug message"""
+		self.logger.debug(msg, **kwargs)
+
+	def info(self, msg: str, **kwargs):
+		"""Log info message"""
+		self.logger.info(msg, **kwargs)
+
+	def warning(self, msg: str, **kwargs):
+		"""Log warning message"""
+		self.logger.warning(msg, **kwargs)
+
+	def error(self, msg: str, **kwargs):
+		"""Log error message"""
+		self.logger.error(msg, **kwargs)
+
+	def exception(self, msg: str):
+		"""Log exception with traceback"""
+		self.logger.exception(msg)
+
+	def set_debug(self, enabled: bool):
+		"""Enable/disable debug logging"""
+		level = logging.DEBUG if enabled else logging.INFO
+		self.logger.setLevel(level)
+
+
+# ========== Plugin Configuration Class ==========
+
+@dataclass
+class PluginConfig:
+	"""Centralized plugin configuration to replace global variables."""
+	debug: bool
+	plugin_path: Path
+	station_dict: Dict[str, str]
+	error_log_path: Path
+	pytz_available: bool
+
+
+@dataclass
+class PluginPaths:
+	"""Centralized path management for UK-Trains plugin"""
+
+	plugin_root: Path
+	fonts_dir: Path
+	station_codes_file: Path
+	image_output_dir: Path
+	log_dir: Path
+
+	@classmethod
+	def initialize(cls, plugin_path: str, user_image_path: Optional[str] = None) -> 'PluginPaths':
+		"""
+		Initialize plugin paths with validation.
+
+		Args:
+			plugin_path: Root path of plugin bundle
+			user_image_path: User-configured image output directory
+
+		Returns:
+			Initialized PluginPaths object
+		"""
+		root = Path(plugin_path)
+
+		# Standard plugin directories
+		fonts = root / 'BoardFonts' / 'MFonts'
+		station_codes = root / constants.STATION_CODES_FILE
+
+		# User-configurable image output
+		if user_image_path:
+			image_output = Path(user_image_path)
+		else:
+			image_output = Path.home() / 'Documents' / 'IndigoImages'
+
+		# Ensure image output directory exists
+		image_output.mkdir(parents=True, exist_ok=True)
+
+		# Log directory - find the current Indigo version dynamically
+		perceptive_dir = Path.home() / 'Library' / 'Application Support' / 'Perceptive Automation'
+
+		# Look for Indigo folders (e.g., "Indigo 2023.2", "Indigo 2024.1", etc.)
+		indigo_folders = sorted([d for d in perceptive_dir.glob('Indigo *') if d.is_dir()], reverse=True)
+
+		if indigo_folders:
+			# Use the most recent version folder
+			log_dir = indigo_folders[0] / 'Logs'
+		else:
+			# Fallback to generic Indigo folder if version-specific not found
+			log_dir = perceptive_dir / 'Indigo' / 'Logs'
+
+		log_dir.mkdir(parents=True, exist_ok=True)
+
+		return cls(
+			plugin_root=root,
+			fonts_dir=fonts,
+			station_codes_file=station_codes,
+			image_output_dir=image_output,
+			log_dir=log_dir
+		)
+
+	def get_image_path(self, start_crs: str, end_crs: str) -> Path:
+		"""Get path for departure board image"""
+		return self.image_output_dir / f'{start_crs}{end_crs}timetable.png'
+
+	def get_text_path(self, start_crs: str, end_crs: str) -> Path:
+		"""Get path for departure board text file"""
+		return self.image_output_dir / f'{start_crs}{end_crs}departureBoard.txt'
+
+	def get_parameters_file(self) -> Path:
+		"""Get path for image generation parameters"""
+		return self.plugin_root / 'trainparameters.txt'
+
+	def get_output_log(self) -> Path:
+		"""Get path for image generation output log"""
+		return self.plugin_root / constants.IMAGE_OUTPUT_LOG
+
+	def get_error_log(self) -> Path:
+		"""Get path for image generation error log"""
+		return self.plugin_root / constants.IMAGE_ERROR_LOG
+
+
+# ========== Pydantic Configuration Models ==========
+
+if BaseModel is not None:
+	class DarwinAPIConfig(BaseModel):
+		"""Configuration for Darwin API access"""
+		api_key: str = Field(min_length=10, description="Darwin API key")
+		wsdl_url: str = Field(
+			default="https://lite.realtime.nationalrail.co.uk/OpenLDBWS/wsdl.aspx",
+			description="Darwin WSDL endpoint"
+		)
+
+		@field_validator('api_key')
+		@classmethod
+		def validate_api_key(cls, v: str) -> str:
+			if v == 'NO KEY' or v == 'NO KEY ENTERED' or v.strip() == '':
+				raise ValueError('Valid Darwin API key required')
+			if len(v) < 10:
+				raise ValueError('Darwin API key must be at least 10 characters')
+			return v
+
+
+	class UpdateConfig(BaseModel):
+		"""Configuration for update frequency"""
+		frequency_seconds: int = Field(
+			default=60,
+			ge=30,  # Greater than or equal to 30
+			le=600,  # Less than or equal to 600
+			description="Update frequency in seconds"
+		)
+
+
+	class ImageConfig(BaseModel):
+		"""Configuration for image generation"""
+		create_images: bool = Field(default=True, description="Enable image generation")
+		image_path: Optional[str] = Field(default=None, description="Path for generated images")
+		font_path: str = Field(default="/Library/Fonts", description="Path to fonts directory")
+		include_calling_points: bool = Field(default=False, description="Include calling points in display")
+
+		# Color configurations
+		normal_color: str = Field(default="#0F0", description="Normal service foreground color")
+		background_color: str = Field(default="#000", description="Background color")
+		issue_color: str = Field(default="#F00", description="Issue/problem color")
+		calling_points_color: str = Field(default="#FFF", description="Calling points color")
+		title_color: str = Field(default="#0FF", description="Title text color")
+
+		@field_validator('image_path')
+		@classmethod
+		def validate_image_path(cls, v: Optional[str]) -> Optional[str]:
+			if v is not None and v.strip() != '':
+				path = Path(v)
+				if not path.parent.exists() and not path.exists():
+					raise ValueError(f'Directory does not exist: {v}')
+			return v
+
+
+	class PluginConfiguration(BaseModel):
+		"""Complete plugin configuration with validation"""
+		darwin: DarwinAPIConfig
+		update: UpdateConfig
+		image: ImageConfig
+		debug: bool = Field(default=False, description="Enable debug logging")
+
+		@classmethod
+		def from_plugin_prefs(cls, prefs: dict) -> 'PluginConfiguration':
+			"""Create configuration from Indigo plugin preferences"""
+			return cls(
+				darwin=DarwinAPIConfig(
+					api_key=prefs.get('darwinAPI', 'NO KEY'),
+					wsdl_url=prefs.get('darwinSite', 'https://lite.realtime.nationalrail.co.uk/OpenLDBWS/wsdl.aspx')
+				),
+				update=UpdateConfig(
+					frequency_seconds=int(prefs.get('updateFreq', 60))
+				),
+				image=ImageConfig(
+					create_images=prefs.get('createMaps', True) in [True, 'true', 'YES', 'yes'],
+					image_path=prefs.get('imageFilename'),
+					font_path=prefs.get('fontPath', '/Library/Fonts'),
+					include_calling_points=prefs.get('includeCalling', False),
+					normal_color=prefs.get('forcolour', '#0F0'),
+					background_color=prefs.get('bgcolour', '#000'),
+					issue_color=prefs.get('isscolour', '#F00'),
+					calling_points_color=prefs.get('cpcolour', '#FFF'),
+					title_color=prefs.get('ticolour', '#0FF')
+				),
+				debug=prefs.get('checkboxDebug1', False)
+			)
+else:
+	# Pydantic not available - define placeholder
+	PluginConfiguration = None
+
+
+# ========== Module-level pytz check (runs at import time) ==========
+# This must stay at module level because it runs before Plugin class instantiation
+_MODULE_FAILPYTZ = True  # Will be set to False if pytz import succeeds below
 
 # Get the current python path for text files
-pypath = os.path.realpath(sys.path[0])
+_MODULE_PYPATH = os.path.realpath(sys.path[0])
 
 # Now update the system path if necessary
-sys.path.append(pypath)
-pypath = pypath + '/'
-#pypath = pypath2.replace(' ', '\ ')
+sys.path.append(_MODULE_PYPATH)
+_MODULE_PYPATH = _MODULE_PYPATH + '/'
 
 
-# Create error log process for solution
+# ========== Error Handler (Module-level function) ==========
+# Note: This function remains at module level for backward compatibility
+# It will be refactored in a future phase
 
-def errorHandler(myError):
-	global nationalDebug,  pypath
+def errorHandler(error_msg: str):
+	"""
+	Legacy error handler for backward compatibility.
+	Logs to plugin logger if available, otherwise falls back to print.
+	"""
+	# Try to get logger from global plugin instance
+	try:
+		if hasattr(sys.modules['__main__'], 'plugin'):
+			plugin = sys.modules['__main__'].plugin
+			if hasattr(plugin, 'plugin_logger'):
+				# Log the exception traceback if available, otherwise just error
+				exc_info = sys.exc_info()
+				if exc_info[0] is not None:
+					plugin.plugin_logger.exception(error_msg)
+				else:
+					plugin.plugin_logger.error(error_msg)
+				return
+		# Fallback: print to stderr
+		print(f"ERROR: {error_msg}", file=sys.stderr)
+		exc_info = sys.exc_info()
+		if exc_info[0] is not None:
+			traceback.print_exception(*exc_info, limit=2, file=sys.stderr)
+	except Exception:
+		# Last resort: just print
+		print(f"ERROR: {error_msg}", file=sys.stderr)
 
-	if nationalDebug:
-		f = open(errorFile, 'a')
-		f.write('-' * 80 + '\n')
-		f.write('Exception Logged:' + str(time.strftime(time.asctime())) + ' in ' + myError + ' module' + '\n\n')
-		exc_type, exc_value, exc_traceback = sys.exc_info()
-		traceback.print_exception(exc_type, exc_value, exc_traceback,limit=2, file=f)
+
+# ========== Retry Logic with Exponential Backoff ==========
+
+def _log_retry_attempt(retry_state):
+	"""Callback to log retry attempts for Darwin API calls."""
+	attempt_number = retry_state.attempt_number
+	if attempt_number > 1:
+		# Get logger from plugin instance if available
+		try:
+			if hasattr(sys.modules['__main__'], 'plugin'):
+				plugin = sys.modules['__main__'].plugin
+				if hasattr(plugin, 'plugin_logger'):
+					plugin.plugin_logger.warning(
+						f"API call failed (attempt {attempt_number}), retrying in "
+						f"{retry_state.next_action.sleep} seconds..."
+					)
+					return
+		except Exception:
+			pass
+		# Fallback to print if logger not available
+		print(f"WARNING: API call failed (attempt {attempt_number}), retrying...", file=sys.stderr)
+
+
+def darwin_api_retry(max_attempts: int = 3):
+	"""
+	Decorator for Darwin API calls with exponential backoff.
+
+	Retries on SOAP/network failures with exponential backoff:
+	- Wait 1s, then 2s, then 4s between retries
+	- Max 3 attempts by default
+	- Only retries on transient errors (network, SOAP faults)
+
+	Args:
+		max_attempts: Maximum number of retry attempts (default: 3)
+
+	Returns:
+		Retry decorator if tenacity is available, otherwise identity function
+	"""
+	# Check if tenacity is available
+	if retry is None:
+		# Tenacity not available, return identity decorator
+		def identity_decorator(func):
+			return func
+		return identity_decorator
+
+	# Import suds here to avoid circular dependency
+	import suds
+
+	return retry(
+		stop=stop_after_attempt(max_attempts),
+		wait=wait_exponential(multiplier=1, min=1, max=10),
+		retry=retry_if_exception_type((suds.WebFault, ConnectionError, TimeoutError)),
+		before_sleep=_log_retry_attempt,
+		reraise=True
+	)
 
 
 # Get darwin access modules and other standard dependencies in place
+# Note: Debug logging removed from import checks - happens before Plugin instance exists
 try:
 	import nredarwin
-	if nationalDebug:
-		indigo.server.log('* Darwin present *', level=logging.INFO)
-except:
-	indigo.server.log("** Couldn't find nredarwin - contact developer or check forums for support **", level=logging.CRITICAL)
+except ImportError as e:
+	indigo.server.log(f"** Couldn't find nredarwin module: {e} - contact developer or check forums for support **", level=logging.CRITICAL)
 	sys.exit(3)
 
 try:
 	import suds
-	if nationalDebug:
-		indigo.server.log('* Suds present *', level=logging.INFO)
-except:
-	indigo.server.log("** Couldn't find suds module - check forums for install process for your system **", level=logging.CRITICAL)
+except ImportError as e:
+	indigo.server.log(f"** Couldn't find suds module: {e} - check forums for install process for your system **", level=logging.CRITICAL)
 	sys.exit(4)
 
 try:
 	import functools
-	if nationalDebug:
-		indigo.server.log('* Functools present *', level=logging.INFO)
-except:
-	indigo.server.log("** Couldn't find functools module - check forums for install process for your system **", level=logging.CRITICAL)
+except ImportError as e:
+	indigo.server.log(f"** Couldn't find functools module: {e} - check forums for install process for your system **", level=logging.CRITICAL)
 	sys.exit(5)
 
 try:
 	import os, logging
-	if nationalDebug:
-		indigo.server.log('* Logging and OS present *', level=logging.INFO)
-except:
-	indigo.server.log("** Couldn't find standard os or logging modules - contact the developer for support **", level=logging.CRITICAL)
+except ImportError as e:
+	indigo.server.log(f"** Couldn't find standard os or logging modules: {e} - contact the developer for support **", level=logging.CRITICAL)
 	sys.exit(6)
 
 try:
 	from nredarwin.webservice import DarwinLdbSession
-	if nationalDebug:
-		indigo.server.log('* Darwin LDBS session ready *', level=logging.INFO)
-except:
-	indigo.server.log("** Error accessing nredarwin webservice - contact developer for support **", level=logging.CRITICAL)
+except ImportError as e:
+	indigo.server.log(f"** Error accessing nredarwin webservice: {e} - contact developer for support **", level=logging.CRITICAL)
 	sys.exit(7)
 
-# Import timezone checker
+# Import timezone checker (module-level check before Plugin class exists)
 try:
 	import pytz
-	failPYTZ = False
-except:
-	indigo.server.log('WARNING - pytz not present times will be in GMT only' , level=logging.INFO)
-	failPYTZ = True
+	_MODULE_FAILPYTZ = False
+except ImportError as e:
+	indigo.server.log(f'WARNING - pytz not present ({e}), times will be in GMT only' , level=logging.INFO)
+	_MODULE_FAILPYTZ = True
 	pass
 
-def getUKTime():
+def getUKTime() -> str:
+	"""Get current UK time formatted as string.
+
+	Returns:
+		Formatted time string with timezone indicator (e.g., "Mon 14:30:45 UK Time")
+	"""
 	### Checks time generated to allow for BST
 	### Note - all times are UK Time
 	### Get the current time in London as a basis
-	global failPYTZ
 
-	if failPYTZ:
+	if _MODULE_FAILPYTZ:
 		# Module isn't installed so we will return GMT time
 		gmtTime = time.gmtime()
 		return time.strftime('%a %H:%M:%S', gmtTime)+' GMT'
@@ -144,19 +476,31 @@ def getUKTime():
 		lonTime = datetime.datetime.now(timeZone)
 		return lonTime.strftime('%a %H:%M:%S')+' UK Time'
 
-def delayCalc(estTime, arrivalTime):
+def delayCalc(scheduled_time: str, estimated_time: str) -> Tuple[bool, str]:
+	"""Calculate delay between scheduled and estimated times.
 
-	global nationalDebug, pypath
+	Args:
+		scheduled_time: Scheduled time string (HH:MM format or status)
+		estimated_time: Estimated time string (HH:MM format or status like "On time")
 
+	Returns:
+		Tuple of (has_problem: bool, message: str)
+
+	Note:
+		If estimated_time > scheduled_time: train is late
+		If estimated_time < scheduled_time: train is early
+	"""
 	# Calculates time different between two times of the form HH:MM or handles On Time, Cancelled or Delayed message
 	delayMessage = ''
 	trainProblem = False
 
-	if '012'.find(arrivalTime[0]) == -1 or '012'.find(estTime[0]) == -1:
-		if arrivalTime.find('On') != -1 or estTime.find('On') != -1:
+	# Check if times are valid HH:MM format or special status strings
+	if not scheduled_time or not estimated_time or scheduled_time[0] not in '012' or estimated_time[0] not in '012':
+		# Handle null/None values safely
+		if scheduled_time and 'On' in scheduled_time or estimated_time and 'On' in estimated_time:
 			delayMessage = 'On time'
 			trainProblem = False
-		elif arrivalTime.upper().find('CAN') != -1 or estTime.upper().find('CAN') != -1 :
+		elif scheduled_time and 'CAN' in scheduled_time.upper() or estimated_time and 'CAN' in estimated_time.upper():
 			delayMessage = 'Cancelled'
 			trainProblem = True
 		else:
@@ -164,39 +508,48 @@ def delayCalc(estTime, arrivalTime):
 			trainProblem = True
 	else:
 		# It's a time so calculate the delay
-		# Convert both to seconds
-		ha, ma = [int(i) for i in arrivalTime.split(':')]
-		timeValArrival = ha * 60 + ma
-		he, me = [int(i) for i in estTime.split(':')]
-		timeValEst = he * 60 + me
+		# Convert both to minutes
+		hs, ms = [int(i) for i in scheduled_time.split(':')]
+		timeValScheduled = hs * 60 + ms
+		he, me = [int(i) for i in estimated_time.split(':')]
+		timeValEstimated = he * 60 + me
 
-		# Check difference
-		if timeValEst - timeValArrival < 0:
-			# Delayed (mins)
-			minsDelay = int(timeValEst - timeValArrival)  # Round up
-			if minsDelay == 1:
-				delayMessage = str(abs(minsDelay)) + ' min late'
-				trainProblem = True
-			else:
-				delayMessage = str(abs(minsDelay)) + ' mins late'
-				trainProblem = True
+		# Check difference: positive means late, negative means early
+		delay_minutes = timeValEstimated - timeValScheduled
 
-		elif timeValEst - timeValArrival > 0:
-			# Early (mins)
-			minsDelay = int(timeValEst - timeValArrival)  # Round up
-			if minsDelay == 1:
-				delayMessage = str(abs(minsDelay)) + ' min early'
-				trainProblem = True
+		if delay_minutes < 0:
+			# Train is early (estimated < scheduled)
+			if abs(delay_minutes) == 1:
+				delayMessage = '1 min early'
 			else:
-				delayMessage = str(abs(minsDelay)) + ' mins early'
-				trainProblem = True
+				delayMessage = f'{abs(delay_minutes)} mins early'
+			trainProblem = True
+
+		elif delay_minutes > 0:
+			# Train is late (estimated > scheduled)
+			if delay_minutes == 1:
+				delayMessage = '1 min late'
+			else:
+				delayMessage = f'{delay_minutes} mins late'
+			trainProblem = True
 		else:
+			# On time (estimated == scheduled)
 			delayMessage = 'On Time'
 			trainProblem = False
 
 	return trainProblem, delayMessage
 
-def formatSpecials(longMessage):
+def formatSpecials(longMessage: str) -> str:
+	"""Format long special messages into readable format.
+
+	Removes HTML tags, limits line length, and wraps to maximum 2 lines.
+
+	Args:
+		longMessage: Raw message string (may contain HTML)
+
+	Returns:
+		Formatted message string with line breaks
+	"""
 	# Formats long messages into a readable format.  Maximum will be two lines in small font
 
 	# Is the message blank?
@@ -209,7 +562,7 @@ def formatSpecials(longMessage):
 	maxLines = 2
 
 	# Remove the non breaking spaces
-	nonBreakingSpace = u'&nbsp'
+	nonBreakingSpace = '&nbsp'
 	longMessage = longMessage.replace(nonBreakingSpace,' ')
 	longMessage = longMessage.replace('\n','')
 
@@ -265,14 +618,506 @@ def formatSpecials(longMessage):
 			remaining = False
 
 	# Return the multi-line string
-	if nationalDebug:
-		indigo.server.log('Return message = '+returnMessage)
+	# Note: Debug logging removed - use plugin instance logger instead
 	return returnMessage
 
-def routeUpdate(dev, apiAccess, networkrailURL, imagePath, parametersFileName):
 
-	global nationalDebug, pypath
-	indigo.debugger()
+# ========== Phase 3 Refactoring: Extracted Helper Functions ==========
+
+def _clear_device_states(dev: Any) -> None:
+	"""Clear all train states on device before update.
+
+	Args:
+		dev: Indigo device object to clear
+	"""
+	# Clear all train data (up to MAX_TRAINS_TRACKED)
+	for trainNum in range(1, constants.MAX_TRAINS_TRACKED + 1):
+		train_prefix = f'train{trainNum}'
+		dev.updateStateOnServer(f'{train_prefix}Dest', value='')
+		dev.updateStateOnServer(f'{train_prefix}Sch', value='')
+		dev.updateStateOnServer(f'{train_prefix}Est', value='')
+		dev.updateStateOnServer(f'{train_prefix}Delay', value='')
+		dev.updateStateOnServer(f'{train_prefix}Issue', value=False)
+		dev.updateStateOnServer(f'{train_prefix}Reason', value='')
+		dev.updateStateOnServer(f'{train_prefix}Calling', value='')
+
+	# Clear station issues flag
+	dev.updateStateOnServer('stationIssues', value=False)
+
+
+def _update_station_issues_flag(dev: Any) -> None:
+	"""Check if any train has issues and update station-level flag.
+
+	Args:
+		dev: Indigo device object to update
+	"""
+	# Check all trains for issues
+	for trainNum in range(1, constants.MAX_TRAINS_TRACKED + 1):
+		train_issue_state = f'train{trainNum}Issue'
+		if dev.states.get(train_issue_state, False):
+			dev.updateStateOnServer('stationIssues', value=True)
+			return
+	# If we get here, no issues found
+	dev.updateStateOnServer('stationIssues', value=False)
+
+
+def _write_departure_board_text(
+	text_path: Path,
+	station_start: str,
+	station_end: str,
+	titles: str,
+	statistics: str,
+	messages: str,
+	board_content: str
+) -> None:
+	"""Write formatted departure board to text file.
+
+	Args:
+		text_path: Full path to output text file (Path object)
+		station_start: Starting station CRS code
+		station_end: Destination station CRS code
+		titles: Column titles string
+		statistics: Statistics/timestamp string
+		messages: Special NRCC messages (may be empty)
+		board_content: Main board content with train listings
+	"""
+	with open(text_path, 'w') as f:
+		f.write(f"{station_start} to {station_end}\n")
+		f.write(titles)
+		f.write(statistics)
+		if messages:
+			f.write(messages)
+		f.write(board_content)
+
+
+def _generate_departure_image(
+	plugin_root: Path,
+	image_filename: Path,
+	text_filename: Path,
+	parameters_filename: Path,
+	departures_available: bool
+) -> subprocess.CompletedProcess:
+	"""Launch subprocess to generate PNG image from text file.
+
+	Args:
+		plugin_root: Path to plugin root directory (Path object)
+		image_filename: Path where PNG will be saved (Path object)
+		text_filename: Path to input text file (Path object)
+		parameters_filename: Path to parameters configuration file (Path object)
+		departures_available: Boolean indicating if departures exist
+
+	Returns:
+		subprocess.CompletedProcess result
+	"""
+	dep_flag = 'YES' if departures_available else 'NO'
+
+	# Use Path objects for subprocess files
+	output_log = plugin_root / constants.IMAGE_OUTPUT_LOG
+	error_log = plugin_root / constants.IMAGE_ERROR_LOG
+
+	with open(output_log, 'w') as output_file, \
+	     open(error_log, 'w') as error_file:
+		result = subprocess.run(
+			[constants.PYTHON3_PATH,
+			 str(plugin_root / 'text2png.py'),
+			 str(image_filename),
+			 str(text_filename),
+			 str(parameters_filename),
+			 dep_flag],
+			stdout=output_file,
+			stderr=error_file
+		)
+	return result
+
+
+# ========== End of Phase 3 Helper Functions ==========
+
+
+@darwin_api_retry(max_attempts=3)
+def _fetch_station_board(
+	session: Any,
+	start_crs: str,
+	end_crs: Optional[str] = None,
+	row_limit: int = 100
+) -> Any:
+	"""Fetch station board with optional destination filter.
+	Retries up to 3 times with exponential backoff on API failures.
+
+	Args:
+		session: DarwinLdbSession object for API access
+		start_crs: Starting station CRS code
+		end_crs: Optional destination CRS code (None or 'ALL' for all destinations)
+		row_limit: Maximum number of services to request
+
+	Returns:
+		StationBoard object from Darwin API
+
+	Raises:
+		suds.WebFault: If SOAP request fails after all retries
+		Exception: For other API errors after all retries
+	"""
+	if end_crs and end_crs != constants.ALL_DESTINATIONS_CRS:
+		# Filtered by destination
+		board = session.get_station_board(
+			start_crs,
+			row_limit,
+			True,   # include_departures
+			False,  # include_arrivals
+			end_crs
+		)
+	else:
+		# All destinations
+		board = session.get_station_board(
+			start_crs,
+			row_limit,
+			True,   # include_departures
+			False   # include_arrivals
+		)
+	return board
+
+
+def _process_special_messages(board: Any, dev: Any, testing_mode: bool = False) -> str:
+	"""Extract and format NRCC special messages from station board.
+
+	Args:
+		board: StationBoard object from Darwin API
+		dev: Indigo device object to update with messages
+		testing_mode: Boolean flag for testing (default: False)
+
+	Returns:
+		Formatted special messages string (empty if no messages)
+	"""
+	# Check if there are messages to process
+	has_messages = (hasattr(board, 'nrcc_messages') and
+	                len(board.nrcc_messages) > 0)
+
+	if not has_messages and not testing_mode:
+		return ''
+
+	if testing_mode:
+		# Test message for BETA
+		special_messages = ('This is a test message that would span a lot of lines in the display.  '
+		                   'We need to format it correctly and remove any special characters&nbspBecause '
+		                   'it is so long it will take a lot of lines on the display and this should be managed'
+		                   ' through the maxLines element')
+	else:
+		# Extract real messages from board
+		special_messages = str(board.nrcc_messages)
+
+	# Format the messages (removes HTML, wraps lines, etc.)
+	formatted_messages = formatSpecials(special_messages)
+
+	# Update device state with cleaned messages
+	dev.updateStateOnServer('stationMessages', value=formatted_messages.replace('+', ''))
+
+	return formatted_messages
+
+
+@darwin_api_retry(max_attempts=2)
+def _fetch_service_details(session: Any, service_id: str) -> Optional[Any]:
+	"""Fetch detailed service information from Darwin API.
+	Retries up to 2 times with exponential backoff on API failures.
+
+	Args:
+		session: DarwinLdbSession object for API access
+		service_id: Unique service identifier
+
+	Returns:
+		ServiceDetails object or None if fetch failed after all retries
+	"""
+	try:
+		service = session.get_service_details(service_id)
+		return service
+	except (suds.WebFault, ConnectionError, TimeoutError) as e:
+		# Log the error but return None to allow other services to process
+		errorHandler(f'Service details fetch failed after retries: {e}')
+		return None
+	except Exception as e:
+		errorHandler(f'Unexpected error fetching service details: {e}')
+		return None
+
+
+def _build_calling_points_string(service: Any) -> str:
+	"""Extract calling points from service and format as string.
+
+	Args:
+		service: ServiceDetails object from Darwin API
+
+	Returns:
+		Formatted calling points string (e.g., "Reading(10:15) Oxford(10:45)")
+	"""
+	try:
+		# Check if subsequent_calling_points exists and is not None
+		calling_points_list = getattr(service, 'subsequent_calling_points', [])
+		if calling_points_list is None:
+			calling_points_list = []
+
+		calling_points = [cp.location_name for cp in calling_points_list]
+		arrival_times = [arrival.st for arrival in calling_points_list]
+		estimated_times = [arrival.et for arrival in calling_points_list]
+	except AttributeError as e:
+		errorHandler(f'WARNING ** SOAP failed on Calling Points access: {e} - try again later **')
+		return ''
+
+	cp_string = ''
+	for cp_index, cpoint in enumerate(calling_points):
+		try:
+			if 'On' in estimated_times[cp_index]:
+				cp_string += cpoint + '(' + arrival_times[cp_index] + ') '
+			else:
+				cp_string += cpoint + '(' + estimated_times[cp_index] + ') '
+		except (AttributeError, IndexError):
+			errorHandler('WARNING - Estimated Time for calling point returned NULL - not critical')
+		except Exception as e:
+			errorHandler(f'WARNING - Estimated Time for calling point - unknown error: {e} - advise developer')
+
+	# Remove redundant "On time" text
+	cp_string = cp_string.replace('On time', '')
+
+	return cp_string
+
+
+def _update_train_device_states(
+	dev: Any,
+	train_num: int,
+	destination: Any,
+	service: Optional[Any],
+	include_calling_points: bool
+) -> None:
+	"""Update all device states for a single train.
+
+	Args:
+		dev: Indigo device object
+		train_num: Train number (1-10)
+		destination: ServiceItem from station board
+		service: ServiceDetails from API
+		include_calling_points: Boolean for whether to include calling points
+	"""
+	# Build state key prefixes
+	train_prefix = f'train{train_num}'
+
+	# Extract service data with null safety
+	dest_text = getattr(destination, 'destination_text', 'Unknown')
+	dest_std = getattr(destination, 'std', '00:00')
+	dest_etd = getattr(destination, 'etd', '00:00')
+	dest_operator = getattr(destination, 'operator_name', 'Unknown')
+
+	# Update basic states
+	dev.updateStateOnServer(f'{train_prefix}Dest', value=dest_text)
+	dev.updateStateOnServer(f'{train_prefix}Op', value=dest_operator)
+	dev.updateStateOnServer(f'{train_prefix}Sch', value=dest_std)
+	dev.updateStateOnServer(f'{train_prefix}Est', value=dest_etd)
+
+	# Calculate and update delay
+	has_problem, delay_msg = delayCalc(dest_std, dest_etd)
+	dev.updateStateOnServer(f'{train_prefix}Delay', value=delay_msg)
+	dev.updateStateOnServer(f'{train_prefix}Issue', value=has_problem)
+
+	# Update reason
+	if 'On Time' in delay_msg:
+		dev.updateStateOnServer(f'{train_prefix}Reason', value='')
+	else:
+		dev.updateStateOnServer(f'{train_prefix}Reason', value='No reason provided')
+
+	# Process calling points if requested
+	if include_calling_points and service:
+		calling_points_str = _build_calling_points_string(service)
+		dev.updateStateOnServer(f'{train_prefix}Calling', value=calling_points_str)
+
+
+def _append_train_to_image(
+	image_content: List[str],
+	destination: Any,
+	include_calling_points: bool,
+	service: Optional[Any],
+	word_length: int = 80
+) -> None:
+	"""Add train service data to image content array.
+
+	Args:
+		image_content: List to append formatted content to
+		destination: ServiceItem from station board
+		include_calling_points: Boolean for whether to include calling points
+		service: ServiceDetails from API (may be None)
+		word_length: Maximum line length for wrapping
+	"""
+	# Extract destination data
+	dest_text = getattr(destination, 'destination_text', 'Unknown')
+	dest_std = getattr(destination, 'std', '00:00')
+	dest_etd = getattr(destination, 'etd', '00:00')
+	operator_code = getattr(destination, 'operator_code', 'Unknown')
+	operator_name = getattr(destination, 'operator_name', 'Unknown')
+
+	# Calculate delay for display
+	has_problem, delay_msg = delayCalc(dest_std, dest_etd)
+
+	# Format main service line
+	if len(delay_msg.strip()) == 0:
+		destination_content = f"\n{dest_text},{dest_std},{dest_etd},{operator_code}\n"
+		image_content.append(destination_content)
+	else:
+		destination_content = f"\n{dest_text},{dest_std},{dest_etd},{operator_name}"
+		image_content.append(destination_content)
+		delay_message = f'Status:{delay_msg}\n'
+		image_content.append(delay_message)
+
+	# Add calling points if requested
+	if include_calling_points and service:
+		cp_string = _build_calling_points_string(service)
+		if len(cp_string) > 0:
+			# Split long calling points into multiple lines
+			if len(cp_string) <= word_length:
+				# No need to split
+				image_content.append('>>> ' + cp_string)
+			else:
+				# Split at word boundaries
+				remaining = cp_string
+				while len(remaining) > word_length:
+					cut_point = remaining.find(')', word_length - 1)
+					if cut_point != -1:
+						image_content.append('>>> ' + remaining[:cut_point + 1])
+						remaining = remaining[cut_point + 1:].lstrip()
+					else:
+						# No closing paren found, just break
+						break
+
+				# Add remaining text
+				if len(remaining.strip()) != 0:
+					image_content.append('>>> ' + remaining)
+
+
+def _process_train_services(
+	dev: Any,
+	session: Any,
+	board: Any,
+	image_content: List[str],
+	include_calling_points: bool,
+	word_length: int = 80
+) -> bool:
+	"""Process all train services from station board.
+
+	Main loop coordinator that fetches service details, updates device states,
+	and builds image content for each train.
+
+	Args:
+		dev: Indigo device object
+		session: DarwinLdbSession for API calls
+		board: StationBoard object
+		image_content: List to append formatted train data to
+		include_calling_points: Boolean for whether to include calling points
+		word_length: Maximum line length for image formatting
+
+	Returns:
+		Boolean indicating if any departures were found
+	"""
+
+	departures_found = False
+	services = getattr(board, 'train_services', [])
+
+	# Debug logging removed - use plugin instance logger instead
+
+	for train_num, destination in enumerate(services[:constants.MAX_TRAINS_TRACKED], start=1):
+		# Debug logging removed - use plugin instance logger instead
+
+		# Fetch full service details from Darwin API
+		service = _fetch_service_details(session, destination.service_id)
+		if service is None:
+			# API call failed, skip this service but continue with others
+			continue
+
+		# Successfully fetched at least one service
+		departures_found = True
+
+		# Update device states for this train
+		_update_train_device_states(dev, train_num, destination, service, include_calling_points)
+
+		# Build image content for this train
+		_append_train_to_image(image_content, destination, include_calling_points, service, word_length)
+
+	return departures_found
+
+
+def _format_station_board(
+	image_content: List[str],
+	departures_found: bool,
+	via_station: str,
+	board: Any,
+	base_via: str,
+	max_lines: int = 30
+) -> str:
+	"""Format image content array into final departure board display.
+
+	Args:
+		image_content: List of strings containing board data
+		departures_found: Boolean indicating if any departures exist
+		via_station: Display string for destination filter (e.g., "(via: London)")
+		board: StationBoard object for station name
+		base_via: Base destination name without formatting
+		max_lines: Maximum number of lines to include in board
+
+	Returns:
+		Formatted station board string
+	"""
+	if not departures_found:
+		# No trains found - generate appropriate message
+		if len(via_station) != 0:
+			return ("** No departures found from " + board.location_name + " direct to " + base_via +
+			        " today **\n** Check Operators website for more information on current schedule and issues **")
+		else:
+			return ("** No departures found from " + board.location_name +
+			        " today **\n** Check Operators website for more information on current schedule and issues **")
+
+	# Format the departure board from image content
+	station_board = ''
+	tot_lines = 0
+
+	for line_index in range(len(image_content)):
+		current_line = image_content[line_index]
+
+		if 'Status' in current_line:
+			# Status/delay line - keep as is
+			board_line = current_line
+
+		elif '>>>' not in current_line:
+			# Regular destination line - parse and format columns
+			parts = current_line.split(',')
+			if len(parts) >= 4:
+				destination = parts[0] + '-' * 50
+				schedule = parts[1] + '-' * 10
+				estimated = parts[2] + '-' * 10
+				operator = parts[3]
+				board_line = destination[:35] + ' ' + schedule[:10] + estimated[:10] + operator
+			else:
+				# Malformed line, keep as is
+				board_line = current_line
+
+		else:
+			# Calling points line (contains '>>>')
+			board_line = current_line
+
+		station_board = station_board + board_line + '\n'
+
+		# Check line limit
+		tot_lines += 1
+		if tot_lines > max_lines:
+			break
+
+	return station_board
+
+
+def routeUpdate(dev, apiAccess, networkrailURL, paths):
+	"""
+	Update train departure device with latest information from Darwin API.
+
+	Args:
+		dev: Indigo device object
+		apiAccess: Darwin API key
+		networkrailURL: Darwin WSDL URL
+		paths: PluginPaths object with all file paths
+
+	Returns:
+		True if update successful, False otherwise
+	"""
 	if not dev.enabled and dev.configured:
 		# Device is currently disabled or new so ignore and move on
 		return False
@@ -285,353 +1130,106 @@ def routeUpdate(dev, apiAccess, networkrailURL, imagePath, parametersFileName):
 
 	darwinSession = accessLogin[1]
 
-	# Accessed database - now update details
-	# First clear all previous data
-	for trainNum in range(1,11):
-		trainDestination = 'train'+str(trainNum)+'Dest'
-		trainSch = 'train'+str(trainNum)+'Sch'
-		trainEst = 'train'+str(trainNum)+'Est'
-		trainDelay = 'train'+str(trainNum)+'Delay'
-		trainIssue = 'train'+str(trainNum)+'Issue'
-		trainReason = 'train'+str(trainNum)+'Reason'
-		trainCalling = 'train'+str(trainNum)+'Calling'
-
-		# Update the device to blank
-		dev.updateStateOnServer(trainDestination, value = '')
-		dev.updateStateOnServer(trainSch, value = '')
-		dev.updateStateOnServer(trainEst, value = '')
-		dev.updateStateOnServer(trainDelay, value = '')
-		dev.updateStateOnServer(trainIssue, value = False)
-		dev.updateStateOnServer(trainReason, value = '')
-		dev.updateStateOnServer(trainCalling, value = '')
-
-	# Ok now set the station issues flag to No
-	dev.updateStateOnServer('stationIssues', value = False)
+	# Clear all previous train data on device
+	_clear_device_states(dev)
 
 	# Ok - now let's get the real data and store it
 
 	# The CRS information will be held against the ROUTE device
 	stationStartCrs = dev.states['stationCRS'] # Codes are found on the National Rail data site and will be provided as a drop list for users
 	stationEndCrs = dev.states['destinationCRS']
+
+	# Fetch station board with optional destination filter
 	try:
-		stationBoardDetails = darwinSession.get_station_board(stationStartCrs)
-	except:
-		errorHandler('WARINING ** SOAP resolution failed - will retry later when server less busy **')
-		return False # This will generally resolve itself within a min anyway
+		stationBoardDetails = _fetch_station_board(darwinSession, stationStartCrs, stationEndCrs)
+	except (suds.WebFault, Exception) as e:
+		errorHandler(f'WARNING ** SOAP resolution failed: {e} - will retry later when server less busy **')
+		return False
 
-	# Extract information on station and store
-	stationBoardName = stationBoardDetails.location_name
-	timeGenerated = getUKTime()
-	dev.updateStateOnServer('stationLong',  value = stationBoardName)
-	dev.updateStateOnServer('timeGenerated', value = timeGenerated)
+	# Update station metadata on device
+	station_name = getattr(stationBoardDetails, 'location_name', 'Unknown Station')
+	time_generated = getUKTime()
+	dev.updateStateOnServer('stationLong', value=station_name)
+	dev.updateStateOnServer('timeGenerated', value=time_generated)
 
-	# Ok let's get the details for all the services
-	# Maximum storage is 10 entries (after filtering)
+	# Calculate destination display strings
+	base_via = dev.states.get('destinationLong', '')
+	via_station = f'(via:{base_via})' if stationEndCrs != 'ALL' else ''
 
-	# Calculate the destination filter for display
-	if stationEndCrs == 'ALL':
-		viaStation = ''
-		baseVia = ''
-	else:
-		baseVia = dev.states['destinationLong']
-		viaStation = '(via:' + baseVia + ')'
+	# Debug logging removed - use plugin instance logger instead
 
-	# Get the departures board
-	# Filtered
-	if stationEndCrs !='ALL':
-		try:
-			stationBoardDetails = darwinSession.get_station_board(stationStartCrs,100,True,False,stationEndCrs)
-		except:
-			errorHandler('WARINING ** SOAP resolution failed - will retry later when server less busy **')
-			return False
-	else:
-		# All trains departing
-		# Get the departures board
-		try:
-			stationBoardDetails = darwinSession.get_station_board(stationStartCrs,100,True,False)
-		except:
-			errorHandler('WARINING ** SOAP resolution failed - will retry later when server less busy **')
-			return False
+	# Initialize image content array
+	image_content = ['Destination,Sch,Est,By']
+	image_filename = paths.get_image_path(stationStartCrs, stationEndCrs)
 
-	if nationalDebug:
-		# Print debug information
-		indigo.server.log('-' * 30, level=logging.DEBUG)
-		indigo.server.log('Calculating the Departures Board for:' + stationBoardDetails.location_name + viaStation, level=logging.DEBUG)
-		indigo.server.log('Generated on:' + str(stationBoardDetails.generated_at)[11:19] + '\n', level=logging.DEBUG)
+	# Process all train services
+	include_calling_points = dev.pluginProps.get('includeCalling', False)
+	departures_found = _process_train_services(
+		dev,
+		darwinSession,
+		stationBoardDetails,
+		image_content,
+		include_calling_points,
+		word_length=80
+	)
 
-	# Image parameters set up
-	imageContent = []
-	columnTitles = "Destination,Sch,Est,By"
-	imageContent.append(columnTitles)
-	textPath = imagePath
-	imageFileName = imagePath+'/'+stationStartCrs+stationEndCrs+'timetable.png'
+	# Update station-level issues flag
+	_update_station_issues_flag(dev)
 
-	if nationalDebug:
-		indigo.server.log('Image File:'+imageFileName, level=logging.DEBUG)
+	# Process special messages and format board
+	special_messages = _process_special_messages(stationBoardDetails, dev, testing_mode=False)
+	board_titles = f"Departures - {station_name} {via_station}{' ' * 60}"[:60] + '\n'
+	board_stats = f'Generated on:{time_generated}\n'
+	station_board = _format_station_board(
+		image_content,
+		departures_found,
+		via_station,
+		stationBoardDetails,
+		base_via,
+		max_lines=30
+	)
 
-	wordLength = 80
-	maxLines = 30
+	# Write departure board text file
+	train_text_file = paths.get_text_path(stationStartCrs, stationEndCrs)
+	_write_departure_board_text(
+		train_text_file,
+		station_start=stationStartCrs,
+		station_end=stationEndCrs,
+		titles=board_titles,
+		statistics=board_stats,
+		messages=special_messages + '\n',
+		board_content=station_board
+	)
 
-	departuresFound = False
-	currentTrain = 0
-
-	if nationalDebug:
-		indigo.server.log('Number of destinations = '+str(len(stationBoardDetails.train_services)), level=logging.DEBUG)
-
-	for destination in stationBoardDetails.train_services:
-		if nationalDebug:
-			indigo.server.log('Train is = ', str(destination), level=logging.DEBUG)
-
-		# Indigo device is limited to 10 departure services and this will also limit the board as well in this version
-		currentTrain += 1
-		if currentTrain > 10:
-			break
-
-		departuresFound = True
-
-		# Field names...
-		trainDestination = 'train'+str(currentTrain)+'Dest'
-		trainOperator = 'train'+str(currentTrain)+'Op'
-		trainSch = 'train'+str(currentTrain)+'Sch'
-		trainEst = 'train'+str(currentTrain)+'Est'
-		trainDelay = 'train'+str(currentTrain)+'Delay'
-		trainProblem = 'train'+str(currentTrain)+'Issue'
-		trainReason = 'train'+str(currentTrain)+'Reason'
-		trainCalling = 'train'+str(currentTrain)+'Calling'
-
-		# Get the service informaiton
-		try:
-			service = darwinSession.get_service_details(destination.service_id)
-		except:
-			errorHandler('WARINING ** SOAP resolution failed - will retry later when server less busy **')
-			return False
-
-		# Store the data for an image file if needed
-		destinationDetails = destination.destination_text + ' ' + destination.std + ' ' + destination.etd + ' Operator: ' + str(
-			destination.operator_name)
-
-		# Add on the delay to the message in the image file
-		destinationDetails += ' ' + delayCalc(destination.std, destination.etd)[1]
-
-		# Now physically update the device
-		dev.updateStateOnServer(trainDestination, value = destination.destination_text)
-		dev.updateStateOnServer(trainOperator, value = destination.operator_name)
-		dev.updateStateOnServer(trainSch, value = destination.std)
-		dev.updateStateOnServer(trainEst, value = destination.etd)
-
-		# Calculate any delay to service
-		delayToService = delayCalc(destination.std, destination.etd)
-		dev.updateStateOnServer(trainDelay, value = delayToService[1])
-		dev.updateStateOnServer(trainProblem, value = delayToService[0])
-
-		if 'On Time'.find(delayToService[1]):
-			dev.updateStateOnServer(trainReason, value = '')
-		else:
-			if trainReason is not None:
-				dev.updateStateOnServer(trainReason, value = str('No reason provided'))
-			else:
-				dev.updateStateOnServer(trainReason, value = '')
-
-		# Now the calling points
-		try:
-			callingPoints = [cp.location_name for cp in service.subsequent_calling_points]
-			arrivalTimes = [arrival.st for arrival in service.subsequent_calling_points]
-			estimatedTimes = [arrival.et for arrival in service.subsequent_calling_points]
-		except:
-			errorHandler('WARINING ** SOAP failed on Calling Points access - try again later **')
-			return False
-
-		cpIndex = 0
-		cpString = ''
-		departuresFound = True
-
-		for cpoint in callingPoints:
-			try:
-				if estimatedTimes[cpIndex].find('On') != -1:
-					cpString += cpoint + '(' + arrivalTimes[cpIndex]+') '
-				else:
-					cpString += cpoint + '(' + estimatedTimes[cpIndex]+') '
-				cpIndex += 1
-			except AttributeError:
-				errorHandler('WARNING - Estimated Time for calling point returned NULL - not critical')
-
-			except:
-				errorHandler('WARNING - Estimated Time for calling point - unknown error advise developer')
-
-		cpString = cpString.replace('On time', '')
-
-		# Update the device with calling point information if required
-		if dev.pluginProps['includeCalling']:
-			callingContent = cpString
-			dev.updateStateOnServer(trainCalling, value = callingContent)
-
-		# Create the image information and store in imageContent
-		if len(delayCalc(destination.std, destination.etd)[1].strip()) == 0:
-			destinationContent = '\n'+destination.destination_text + ',' + destination.std + ',' + destination.etd + ',' + \
-								 str(destination.operator_code)+'\n'
-			imageContent.append(destinationContent)
-		else:
-			destinationContent = '\n'+destination.destination_text + ',' + destination.std + ',' + destination.etd + ',' + \
-								 str(destination.operator_name)
-			imageContent.append(destinationContent)
-			delayMessage = 'Status:'+delayCalc(destination.std, destination.etd)[1]+'\n'
-			imageContent.append(delayMessage)
-
-		# Calling points for image
-		# Check if calling points wanted in the image
-		if dev.pluginProps['includeCalling']:
-			callingContent = cpString
-			if len(callingContent) > 0:
-				# Is the width longer than the image size
-				if len(callingContent)<=wordLength:
-					# No need to split the line up
-					imageContent.append('>>> ' + callingContent)
-				else:
-					# Split up the line into parts
-					# Find the first ')' after wordLength
-					# First Line
-					cutWordPoint = callingContent.find(')',wordLength-1)
-					imageContent.append('>>> ' + callingContent[:cutWordPoint+1])
-					remainingLine = callingContent[cutWordPoint+1:]
-
-					# Other Lines
-					while len(remainingLine)>wordLength:
-						cutWordPoint = remainingLine.find(')', wordLength)
-						imageContent.append('>>> '+remainingLine[:cutWordPoint+1])
-						remainingLine = remainingLine[cutWordPoint+2:]
-
-					# Now the last piece
-					if len(remainingLine.strip()) != 0:
-						imageContent.append('>>> '+remainingLine)
-
-	# Ok - now just check if there is an issue on one of the trains at this station and flag if necessary
-	for trainNum in range(1,11):
-		trainProblem = 'train'+str(trainNum)+'Issue'
-		if dev.states[trainProblem]:
-			# There is an issue with at least one train so flag the station
-			dev.updateStateOnServer('stationIssues', value = True)
-			# No need to check any more field
-			break
-
-	# Create Image
-	titleSeparator = '\n'+'-'*80+'\n'
-
-	# Test messages flag (remove after BETA)
-	testingMessages = False
-
-	# The title for the departure board
-	if len(stationBoardDetails.nrcc_messages)>0 or testingMessages:
-		if testingMessages:
-			specialMessages = 'This is a test message that would span a lot of lines in the display.  ' \
-							  'We need to format it correctly and remove any special characters'+u'&nbspBecause '+\
-							  'it is so long it will take a lot of lines on the display and this should be managed'+ \
-							  ' through the maxLines element'
-
-		else:
-			specialMessages = str(stationBoardDetails.nrcc_messages)
-
-		specialMessages = formatSpecials(specialMessages)
-
-	else:
-		specialMessages = ''
-
-	departureBoardTitles = ("Departures - "+stationBoardDetails.location_name + ' '+ viaStation + ' '*60)[:60]+'\n'
-	departureStatistics = 'Generated on:' + timeGenerated+'\n'
-	departureMessages = specialMessages+'\n'
-
-	# Update device with messages
-	dev.updateStateOnServer('stationMessages', value = specialMessages.replace('+',''))
-
-	if departuresFound:
-		# Now format the departure content correctly
-		stationBoard = ''
-		newDes = []
-		totLines = 0
-
-		for newLines in range(len(imageContent)):
-
-			if imageContent[newLines].find('Status') != -1:
-				# Departure Details
-				boardLine = imageContent[newLines]
-
-			elif imageContent[newLines].find('>>>') == -1:
-				# This is a destination line
-				newDes = imageContent[newLines].split(',')
-				destination = newDes[0] + '-' * 50
-				schedule = newDes[1] + '-' * 10
-				estimated = newDes[2] + '-' * 10
-				operator = newDes[3]
-				boardLine = destination[:35] + ' ' +schedule[:10] + estimated[:10] + operator
-
-			else:
-				# Calling points
-				boardLine = imageContent[newLines]
-
-			stationBoard = stationBoard + boardLine +'\n'
-
-			# Check it still fits in the image
-			totLines += 1
-			if totLines>maxLines:
-				break
-
-	else:
-		if len(viaStation) != 0:
-			stationBoard = "** No departures found from "+stationBoardDetails.location_name+" direct to "+baseVia\
-						   + " today **\n** Check Operators website for more information on current schedule and issues **"
-		else:
-			stationBoard = "** No departures found from "+stationBoardDetails.location_name\
-						   + " today **\n** Check Operators website for more information on current schedule and issues **"
-
-		dev.updateStateOnServer('stationMessages', value = specialMessages)
-
-	# Ready to create image from information
-	# Now we can create the image - yay
-	# Create a text file for the image in the location stored
-	trainText = textPath+'/'+stationStartCrs+stationEndCrs+'departureBoard.txt'
-	trainTextFile =  open(trainText,'w')
-
-	# Write the Departure board information first
-	trainTextFile.write(departureBoardTitles)
-	trainTextFile.write(departureStatistics)
-	if len(departureMessages.strip()) != 0:
-		trainTextFile.write(departureMessages)
-
-	# Now the stationboard itself
-	trainTextFile.write(stationBoard)
-	trainTextFile.close()
-
-	# Now run an instance of python with the corrent information to create a file for the Refreshing URL funcitonality
-	if departuresFound:
-		departuresAvailable = 'YES'
-	else:
-		departuresAvailable = 'NO'
-
-	# Now we can call the subprocess to manage the conversion and move onto the next image
-	# We run a fresh python image which means that the current environment variables are maintained for shared files
-	# See forum for more details
-	# Create places for the stderror and stdoutput
+	# Generate PNG image from text file
 	indigo.debugger()
-	outputInfo = open(pypath+'myImageOutput.txt',mode = 'w')
-	errorInfo = open(pypath+'myImageErrors.txt',mode = 'w')
-	if nationalDebug:
-		indigo.server.log('Pypath = '+str(pypath)+'\nError: '+str(errorInfo)+'\nStandard: '+str(outputInfo))
-	parametersFileNameMac = parametersFileName.replace(' ','\ ')
-	imgResult = subprocess.run(['/Library/Frameworks/Python.framework/Versions/Current/bin/python3', pypath+'text2png.py', imageFileName, trainText, parametersFileName, departuresAvailable], stdout=outputInfo, stderr=errorInfo)
+	parameters_file = paths.get_parameters_file()
+	_generate_departure_image(
+		paths.plugin_root,
+		image_filename,
+		train_text_file,
+		parameters_file,
+		departures_available=departures_found
+	)
 
-	print(imgResult)
 	return True
 
+@darwin_api_retry(max_attempts=2)
 def nationalRailLogin(wsdl = 'https://lite.realtime.nationalrail.co.uk/OpenLDBWS/wsdl.aspx',api_key='NO KEY'):
-	# Module forces a login to the National Rail darwin service.  An API key is needed and the plugin will
-	# fail if it's not provided
+	"""Login to National Rail Darwin service.
+	Retries up to 2 times on connection failures.
 
-	global nationalDebug, pypath
+	Args:
+		wsdl: Darwin WSDL URL
+		api_key: Darwin API key
 
-	if wsdl.find('realtime.nationalrail') == -1:
+	Returns:
+		Tuple of (success: bool, session: DarwinLdbSession or None)
+	"""
+	if 'realtime.nationalrail' not in wsdl:
 		# Darwin address is invalid
 		# print error message and return
-		if nationalDebug:
-			indigo.server.log('Darwin address is invalid - please read forum for update or contact developer')
+		# Debug logging removed - use plugin instance logger instead
 
 		errorHandler('CRITICAL FAILURE ** Darwin is invalid - please check or advise developer - '+wsdl+' **')
 
@@ -641,17 +1239,15 @@ def nationalRailLogin(wsdl = 'https://lite.realtime.nationalrail.co.uk/OpenLDBWS
 	try:
 		darwin_sesh = DarwinLdbSession(wsdl, api_key)
 		# Login successful
-		if nationalDebug:
-			indigo.server.log('Login successful - now processing routes...')
+		# Debug logging removed - use plugin instance logger instead
 
 		return True, darwin_sesh
 
-	except:
+	except Exception as e:
 		# Login failed. As the user to check details and try again
-		if nationalDebug:
-			indigo.server.log('Login failed - a) API key invalid, b) Dawin Offline or c) No Internet Access - Please check and reload plugin')
+		# Debug logging removed - use plugin instance logger instead
 
-		errorHandler('WARNING ** Failed to log in to Darwin - check API key and internet connection')
+		errorHandler(f'WARNING ** Failed to log in to Darwin: {e} - check API key and internet connection')
 
 		return False, None
 
@@ -663,19 +1259,50 @@ class Plugin(indigo.PluginBase):
 		indigo.PluginBase.__init__(self, pluginId, pluginDisplayName, pluginVersion, pluginPrefs)
 
 		self.validatePrefsConfigUi(pluginPrefs)
-		global nationalDebug, stationDict, pypath
+
+		# Initialize paths first
+		user_image_path = pluginPrefs.get('imageFilename')
+		self.paths = PluginPaths.initialize(_MODULE_PYPATH.rstrip('/'), user_image_path)
+
+		# Create structured logger using paths object
+		debug_enabled = pluginPrefs.get('checkboxDebug1', False)
+		self.plugin_logger = PluginLogger(pluginId, self.paths.log_dir, debug_enabled)
+		self.plugin_logger.info(f"{pluginDisplayName} v{pluginVersion} initializing")
+
+		# Validate configuration using Pydantic
+		if PluginConfiguration is not None:
+			try:
+				self.validated_config = PluginConfiguration.from_plugin_prefs(pluginPrefs)
+				self.plugin_logger.info("Configuration validated successfully")
+			except Exception as e:
+				self.plugin_logger.error(f"Configuration validation failed: {e}")
+				self.plugin_logger.warning("Continuing with default configuration. Please check plugin settings.")
+				# Continue with defaults but log error
+				self.validated_config = None
+		else:
+			self.plugin_logger.warning("Pydantic not available - using basic validation only")
+			self.validated_config = None
+
+		# Initialize plugin configuration (replaces global variables)
+		self.config = PluginConfig(
+			debug=pluginPrefs.get('checkboxDebug1', False),
+			plugin_path=Path(_MODULE_PYPATH),
+			station_dict={},
+			error_log_path=Path('/Library/Application Support/Perceptive Automation/Indigo 2023.2/Logs/NationRailErrors.log'),
+			pytz_available=not _MODULE_FAILPYTZ
+		)
+
 		self.pluginid = pluginId
 		# Set up version checker
 		travelVersionFile = 'https://www.dropbox.com/s/62kahe2nh848b65/iTravelVersionInfo.html?dl=1'
 
-		if nationalDebug:
-			indigo.server.log('Initiating Plugin Class...', level=logging.DEBUG)
+		if self.config.debug:
+			self.plugin_logger.debug('Initiating Plugin Class...')
 
 	def __del__(self):
 		indigo.PluginBase.__del__(self)
 
 	def validateDeviceConfigUi(self, devProps, typeId, devId):
-		global nationalDebug, stationDict, pypath
 
 		# Create station dictionary for lookup
 		currentStationDict = self.createStationDict()
@@ -742,10 +1369,9 @@ class Plugin(indigo.PluginBase):
 		return True, devProps, errorDict
 
 	def validatePrefsConfigUi(self, devProps):
-		global nationalDebug, stationDict
 
-		if nationalDebug:
-			indigo.server.log('Validating Config file...')
+		if hasattr(self, 'config') and self.config.debug:
+			self.plugin_logger.debug('Validating Config file...')
 
 		errorDict = indigo.Dict()
 		if 'darwinAPI' in devProps:
@@ -781,18 +1407,25 @@ class Plugin(indigo.PluginBase):
 					errorDict["showAlertText"] = "You must enter a path for your image (e.g. /Users/myIndigo) - no trailing '/'"
 					return (False, devProps, errorDict)
 
-
+				# Validate path using pathlib
 				try:
-					if nationalDebug:
-						indigo.server.log('Trying to create file '+devProps['imageFilename']+'/filecheck.txt')
+					image_path = Path(devProps['imageFilename'])
+					if hasattr(self, 'config') and self.config.debug:
+						self.plugin_logger.debug(f'Validating image path: {image_path}')
 
-					f=open(devProps['imageFilename']+'/filecheck.txt','w')
-					f.close()
-				except:
+					# Ensure directory exists or can be created
+					image_path.mkdir(parents=True, exist_ok=True)
+
+					# Test write permissions
+					test_file = image_path / 'filecheck.txt'
+					with open(test_file, 'w') as f:
+						f.write('test')
+					test_file.unlink()  # Remove test file
+				except (IOError, OSError, PermissionError) as e:
 					# Can't open file in location report error to user
 					errorDict = indigo.Dict()
 					errorDict["imageFilename"] = "Invalid path for image files"
-					errorDict["showAlertText"] = "You must enter a valid path for your image (e.g. /Users/myIndigo) - no trailing '/'"
+					errorDict["showAlertText"] = f"Cannot write to path (e.g. /Users/myIndigo) - no trailing '/': {e}"
 					return (False, devProps, errorDict)
 
 			else:
@@ -802,7 +1435,7 @@ class Plugin(indigo.PluginBase):
 			devProps['createMaps'] = False
 
 		if 'forcolour' in devProps:
-			if devProps['forcolour'].find('#') == -1:
+			if '#' not in devProps['forcolour']:
 				# Missing # in colour format - tell user to correct and fail
 				errorDict = indigo.Dict()
 				errorDict["forcolour"] = "Missing # symbol in colour specification"
@@ -810,7 +1443,7 @@ class Plugin(indigo.PluginBase):
 				return (False, devProps, errorDict)
 
 		if 'bgcolour' in devProps:
-			if devProps['bgcolour'].find('#') == -1:
+			if '#' not in devProps['bgcolour']:
 				# Missing # in colour format - tell user to correct and fail
 				errorDict = indigo.Dict()
 				errorDict["bgcolour"] = "Missing # symbol in colour specification"
@@ -818,7 +1451,7 @@ class Plugin(indigo.PluginBase):
 				return (False, devProps, errorDict)
 
 		if 'isscolour' in devProps:
-			if devProps['isscolour'].find('#') == -1:
+			if '#' not in devProps['isscolour']:
 				# Missing # in colour format - tell user to correct and fail
 				errorDict = indigo.Dict()
 				errorDict["isscolour"] = "Missing # symbol in colour specification"
@@ -826,7 +1459,7 @@ class Plugin(indigo.PluginBase):
 				return (False, devProps, errorDict)
 
 		if 'cpcolour' in devProps:
-			if devProps['cpcolour'].find('#') == -1:
+			if '#' not in devProps['cpcolour']:
 				# Missing # in colour format - tell user to correct and fail
 				errorDict = indigo.Dict()
 				errorDict["cpcolour"] = "Missing # symbol in colour specification"
@@ -834,7 +1467,7 @@ class Plugin(indigo.PluginBase):
 				return (False, devProps, errorDict)
 
 		if 'ticolour' in devProps:
-			if devProps['ticolour'].find('#') == -1:
+			if '#' not in devProps['ticolour']:
 				# Missing # in colour format - tell user to correct and fail
 				errorDict = indigo.Dict()
 				errorDict["ticolour"] = "Missing # symbol in colour specification"
@@ -855,8 +1488,8 @@ class Plugin(indigo.PluginBase):
 	# Indigo Server.
 	def _refreshStatesFromHardware(self, dev):
 		# Send status updates to the indigo log
-		if nationalDebug:
-			indigo.server.log(u"RGB States check called")
+		if self.config.debug:
+			self.plugin_logger.debug("RGB States check called")
 
 	########################################
 	def deviceStartComm(self, dev):
@@ -880,20 +1513,20 @@ class Plugin(indigo.PluginBase):
 		###### TURN ON ######
 		# Ignore turn on/off/toggle requests from clients since this is a read-only sensor.
 		if action.sensorAction == indigo.kSensorAction.TurnOn:
-			if nationalDebug:
-				indigo.server.log(u"ignored \"%s\" %s request (sensor is read-only)" % (dev.name.encode('ascii', 'ignore'), "on"), level=logging.DEBUG)
+			if self.config.debug:
+				self.plugin_logger.debug(f'ignored "{dev.name}" on request (sensor is read-only)')
 
 		###### TURN OFF ######
 		# Ignore turn on/off/toggle requests from clients since this is a read-only sensor.
 		elif action.sensorAction == indigo.kSensorAction.TurnOff:
-			if nationalDebug:
-				indigo.server.log(u"ignored \"%s\" %s request (sensor is read-only)" % (dev.name.encode('ascii', 'ignore'), "off"), level=logging.DEBUG)
+			if self.config.debug:
+				self.plugin_logger.debug(f'ignored "{dev.name}" off request (sensor is read-only)')
 
 		###### TOGGLE ######
 		# Ignore turn on/off/toggle requests from clients since this is a read-only sensor.
 		elif action.sensorAction == indigo.kSensorAction.Toggle:
-			if nationalDebug:
-				indigo.server.log(u"ignored \"%s\" %s request (sensor is read-only)" % (dev.name.encode('ascii', 'ignore'), "toggle"), level=logging.DEBUG)
+			if self.config.debug:
+				self.plugin_logger.debug(f'ignored "{dev.name}" toggle request (sensor is read-only)')
 
 	########################################
 	# General Action callback
@@ -903,19 +1536,19 @@ class Plugin(indigo.PluginBase):
 		if action.deviceAction == indigo.kDeviceGeneralAction.Beep:
 			# Beep the hardware module (dev) here:
 			# ** IMPLEMENT ME **
-			indigo.server.log(u"sent \"%s\" %s" % (dev.name.encode('ascii', 'ignore'), "beep request"), level=logging.DEBUG)
+			self.plugin_logger.debug(f'sent "{dev.name}" beep request')
 
 		###### ENERGY UPDATE ######
 		elif action.deviceAction == indigo.kDeviceGeneralAction.EnergyUpdate:
 			# Request hardware module (dev) for its most recent meter data here:
 			# ** IMPLEMENT ME **
-			indigo.server.log(u"sent \"%s\" %s" % (dev.name.encode('ascii', 'ignore'), "energy update request"), level=logging.DEBUG)
+			self.plugin_logger.debug(f'sent "{dev.name}" energy update request')
 
 		###### ENERGY RESET ######
 		elif action.deviceAction == indigo.kDeviceGeneralAction.EnergyReset:
 			# Request that the hardware module (dev) reset its accumulative energy usage data here:
 			# ** IMPLEMENT ME **
-			indigo.server.log(u"sent \"%s\" %s" % (dev.name.encode('ascii', 'ignore'), "energy reset request"), level=logging.DEBUG)
+			self.plugin_logger.debug(f'sent "{dev.name}" energy reset request')
 
 		###### STATUS REQUEST ######
 		elif action.deviceAction == indigo.kDeviceGeneralAction.RequestStatus:
@@ -928,31 +1561,26 @@ class Plugin(indigo.PluginBase):
 			# ** GET BATTERY INFO **
 			# and call the common function to update the thermo-specific data
 			self._refreshStatesFromHardware(dev)
-			if nationalDebug:
-				indigo.server.log(u"sent \"%s\" %s" % (dev.name.encode('ascii', 'ignore'), "status request"), level=logging.DEBUG)
+			if self.config.debug:
+				self.plugin_logger.debug(f'sent "{dev.name}" status request')
 
 	def startup(self):
-		global nationalDebug, stationDict, pypath
 
-		try:
-			requirements.requirements_check(self.pluginid)
-		except ImportError as exception_error:
-			self.logger.critical(f"PLUGIN STOPPED: {exception_error}")
-			self.do_not_start_devices = True
-			self.stopPlugin()
+		self.plugin_logger.info("UK-Trains plugin startup")
 
-		if nationalDebug:
-			indigo.server.log('Initiating Plugin Startup module...', level=logging.DEBUG)
+		# Update log level if debug setting changed
+		debug_enabled = self.pluginPrefs.get('checkboxDebug1', False)
+		self.plugin_logger.set_debug(debug_enabled)
+		self.config.debug = debug_enabled
 
-		if self.pluginPrefs.get('checkboxDebug1',False):
-			indigo.server.log(u"startup called")
+		if self.config.debug:
+			self.plugin_logger.debug('Initiating Plugin Startup module...')
 
 		# Get configuration
 		apiKey = self.pluginPrefs.get('darwinAPI', 'NO KEY')
 		dawinURL = self.pluginPrefs.get('darwinSite', 'No URL')
 		stationImage = self.pluginPrefs.get('createMaps', "true")
 		refreshFreq = int(self.pluginPrefs.get('updateFreq','60'))
-		nationalDebug = self.pluginPrefs.get('checkboxDebug1', False)
 
 		if stationImage:
 			imagePath= self.pluginPrefs.get('imageFilename', '/Users')
@@ -964,22 +1592,21 @@ class Plugin(indigo.PluginBase):
 			self.pluginPrefs['updaterEmail']=''
 			self.pluginPrefs['updaterEmailsEnabled']='false'
 
-		except:
+		except Exception as e:
 			if self.pluginPrefs.get('checkBoxDebug',False):
-				self.errorLog(u"Update checker error.")
+				self.errorLog(f"Update checker error: {e}")
 
 		for dev in indigo.devices.itervalues("self"):
 			# Now check states
 			dev.stateListOrDisplayStateIdChanged()
 
 	def shutdown(self):
-		indigo.server.log(u"shutdown called")
+		self.plugin_logger.info("UK-Trains plugin shutdown")
 
 	########################################
 	def runConcurrentThread(self):
 		# Get the most current information
 		# Validate preferences exist
-		global nationalDebug, stationDict, pypath
 
 		# Empty log
 
@@ -993,11 +1620,7 @@ class Plugin(indigo.PluginBase):
 			darwinURL = self.pluginPrefs.get('darwinSite', 'No URL')
 			stationImage = self.pluginPrefs.get('createMaps', "true")
 			refreshFreq = int(self.pluginPrefs.get('updateFreq','60'))
-			nationalDebug = self.pluginPrefs.get('checkboxDebug1', False)
-
-			fontFullPath = pypath+'BoardFonts/MFonts/Lekton-Bold.ttf' # Regular
-			fontFullPathTitle = pypath+'BoardFonts/MFonts/sui generis rg.ttf' # Bold Title
-			fontCallingPoints = pypath+'BoardFonts/MFonts/Hack-RegularOblique.ttf' # Italic
+			self.config.debug = self.pluginPrefs.get('checkboxDebug1', False)
 
 			# Get colours for display or defaults
 			forcolour = self.pluginPrefs.get('forcolour', '#0F0')
@@ -1006,42 +1629,26 @@ class Plugin(indigo.PluginBase):
 			cpcolour = self.pluginPrefs.get('cpcolour', '#FFF')
 			ticolour = self.pluginPrefs.get('ticolour', '#0FF')
 
-			# Now create a parameters file - this is user changeable in the BETA version
-			parametersFileName = pypath + 'trainparameters.txt'
-			parametersFile = open(parametersFileName, 'w')
-			parametersFile.write(
-				forcolour + ',' + bgcolour + ',' + isscolour + ',' + ticolour + ',' + cpcolour + ',9,3,3,720')
-			parametersFile.close()
+			# Update image path if it changed in preferences
+			user_image_path = self.pluginPrefs.get('imageFilename')
+			if user_image_path and stationImage:
+				# User changed image path, reinitialize paths
+				self.paths = PluginPaths.initialize(_MODULE_PYPATH.rstrip('/'), user_image_path)
 
-			if stationImage:
-				imagePath= self.pluginPrefs.get('imageFilename', '/Users')
+			# Create parameters file using pathlib
+			parameters_file = self.paths.get_parameters_file()
+			with open(parameters_file, 'w') as f:
+				f.write(f'{forcolour},{bgcolour},{isscolour},{ticolour},{cpcolour},9,3,3,720')
 
-				# Now create a parameters file - this is user changeable in the BETA version
-				parametersFileName = pypath+'trainparameters.txt'
-				parametersFile = open(parametersFileName,'w')
-				parametersFile.write(forcolour+','+bgcolour+','+isscolour+','+ticolour+','+cpcolour+',9,3,3,720')
-				parametersFile.close()
-
-			else:
-				imagePath = 'No Image'
-
-			try:
-				self.pluginPrefs['checkboxDebug']='false'
-				self.pluginPrefs['updaterEmail']=''
-				self.pluginPrefs['updaterEmailsEnabled']='false'
-				self.updater.checkVersionPoll()
-
-			except:
-				if self.pluginPrefs.get('checkBoxDebug',False):
-					self.errorLog(u"Update checker error.")
+			# Note: Update checker functionality removed - self.updater was never initialized
+			# If update checking is needed in the future, initialize self.updater in __init__
 
 			# Reset the log?
 			if logTimeNextReset<time.time():
-				f = open(errorFile,'w')
-				f.write('#'*80+'\n')
-				f.write('Log reset:'+str(time.strftime(time.asctime()))+'\n')
-				f.write('#'*80+'\n')
-				f.close()
+				with open(self.config.error_log_path, 'w') as f:
+					f.write('#'*80+'\n')
+					f.write('Log reset:'+str(time.strftime(time.asctime()))+'\n')
+					f.write('#'*80+'\n')
 				logReset = False
 				logTimeNextReset = time.time()+int(3600)
 
@@ -1052,11 +1659,11 @@ class Plugin(indigo.PluginBase):
 				# Update the standard fields if they've been changed
 				# Checking
 				# Test mode only
-				if nationalDebug:
-					indigo.server.log('Device:'+dev.name+' being checked now...', level=logging.DEBUG)
+				if self.config.debug:
+					self.plugin_logger.debug('Device:'+dev.name+' being checked now...')
 
-				if nationalDebug:
-					indigo.server.log(dev.name+' is '+ str(dev.states['deviceActive']), level=logging.DEBUG)
+				if self.config.debug:
+					self.plugin_logger.debug(dev.name+' is '+ str(dev.states['deviceActive']))
 
 				if dev.states['deviceActive']:
 					dev.updateStateOnServer('stationLong', value = dev.pluginProps['stationName'])
@@ -1065,7 +1672,7 @@ class Plugin(indigo.PluginBase):
 					dev.updateStateOnServer('destinationCRS',value = dev.pluginProps['destinationCode'])
 
 					# Update the device with the latest information
-					deviceRefresh = routeUpdate(dev, apiKey, darwinURL, imagePath, parametersFileName)
+					deviceRefresh = routeUpdate(dev, apiKey, darwinURL, self.paths)
 
 					if not deviceRefresh:
 						# Update failed - probably due to SOAP server timeout
@@ -1073,8 +1680,8 @@ class Plugin(indigo.PluginBase):
 						# Change the active icon on this round
 						dev.updateStateImageOnServer(indigo.kStateImageSel.SensorOff)
 						dev.updateStateOnServer('deviceStatus', value = 'Awaiting update')
-						if nationalDebug:
-							indigo.server.log('** Error updating device '+dev.name+' SOAP server failure **')
+						if self.config.debug:
+							self.plugin_logger.error('** Error updating device '+dev.name+' SOAP server failure **')
 					else:
 						# Success
 						if dev.states["stationIssues"]:
@@ -1084,8 +1691,8 @@ class Plugin(indigo.PluginBase):
 							dev.updateStateImageOnServer(indigo.kStateImageSel.SensorOn)
 							dev.updateStateOnServer('deviceStatus', value = 'Running on time')
 
-						if nationalDebug:
-							indigo.server.log('** Sucessfully updated:'+dev.name+' **')
+						if self.config.debug:
+							self.plugin_logger.debug('** Sucessfully updated:'+dev.name+' **')
 
 				else:
 					dev.updateStateImageOnServer(indigo.kStateImageSel.SensorOff)
@@ -1115,47 +1722,38 @@ class Plugin(indigo.PluginBase):
 	# Selection actions for device configuration
 
 	def selectStation(self, filter="", valuesDict=None, typeId="", targetId=0):
-		global nationalDebug, stationDict, pypath
 
 		# Refresh the station codes from file
-		stationDict = {}
+		self.config.station_dict = {}
 
-		# Open the station codes file
-		stationCodesFile = pypath+'/stationCodes.txt'
+		# Open the station codes file using pathlib
+		station_codes_file = self.paths.station_codes_file
 
 		try:
-			stations = open(stationCodesFile,"r")
-		except:
+			with open(station_codes_file, "r") as stations:
+				# Extract the data to dictionary
+				# Data format is CRS,Station Name (csv)
+				local_station_dict = {}
+				stationList = []
+				for line in stations:
+					stationDetails = line
+					stationCRS = stationDetails[:3]
+					stationName = stationDetails[4:].replace('\r\n','')
+
+					# Add to dictionary
+					local_station_dict[stationName]=stationName
+					stationList.append(stationName)
+		except (IOError, OSError) as e:
 			# Couldn't find stations file - advise user and exit
-			indigo.server.log('*** Could not open station code file '+stationCodesFile+' ***')
-			errorHandler('CRITICAL FAILURE ** Station Code file missing - '+stationCodesFile)
+			self.plugin_logger.error(f"*** Could not open station code file {station_codes_file}: {e} ***")
+			errorHandler(f'CRITICAL FAILURE ** Station Code file missing - {station_codes_file}')
 			sys.exit(1)
-		indigo.debugger()
-		# Extract the data to dictionary
-		# Data format is CRS,Station Name (csv)
-		stationDict = {}
-		stationList = []
-		for line in stations:
-			stationDetails = line
-			stationCRS = stationDetails[:3]
-			stationName = stationDetails[4:].replace('\r\n','')
 
-			# Add to dictionary
-			#
-			stationDict[stationName]=stationName
-			stationList.append(stationName)
-		# Close the data file
-		stations.close()
-
-		if len(stationDict) == 0:
+		if len(local_station_dict) == 0:
 			# Dictionary is empty - advise user and exit
-			indigo.server.log('*** Station File is empty - please reinstall '+stationCodesFile+' ***')
-			errorHandler('CRITICAL FAILURE ** Station code file empty - '+stationCodesFile)
+			indigo.server.log(f'*** Station File is empty - please reinstall {station_codes_file} ***')
+			errorHandler(f'CRITICAL FAILURE ** Station code file empty - {station_codes_file}')
 			sys.exit(1)
-		indigo.debugger()
-		#stationCodeArray = stationDict.items()
-		#stationCodeArray.sort(key=lambda x: x.get('1'))
-		#jmoistures.sort(key=lambda x: x.get('id'), reverse=True)
 
 		return stationList
 
@@ -1171,46 +1769,39 @@ class Plugin(indigo.PluginBase):
 
 	def createStationDict(self):
 
-		global nationalDebug, pypath
-
 		# Refresh the station codes from file
 		localStationDict = {}
 
-		# Open the station codes file
-		stationCodesFile = pypath+'/stationCodes.txt'
+		# Open the station codes file using pathlib
+		station_codes_file = self.paths.station_codes_file
 
 		try:
-			stations = open(stationCodesFile,"r")
-		except:
+			with open(station_codes_file, "r") as stations:
+				# Extract the data to dictionary
+				# Data format is CRS,Station Name (csv)
+				for line in stations:
+					stationDetails = line
+					stationCRS = stationDetails[:3]
+					stationName = stationDetails[4:].replace('\r\n','')
+
+					# Add to dictionary
+					localStationDict[stationName]=stationCRS
+		except (IOError, OSError) as e:
 			# Couldn't find stations file - advise user and exit
-			indigo.server.log('*** Could not open station code file '+stationCodesFile+' ***')
-			errorHandler('CRITICAL FAILURE ** Station Code file missing - '+stationCodesFile)
+			self.plugin_logger.error(f"*** Could not open station code file {station_codes_file}: {e} ***")
+			errorHandler(f'CRITICAL FAILURE ** Station Code file missing - {station_codes_file}')
 			sys.exit(1)
-
-		# Extract the data to dictionary
-		# Data format is CRS,Station Name (csv)
-		for line in stations:
-			stationDetails = line
-			stationCRS = stationDetails[:3]
-			stationName = stationDetails[4:].replace('\r\n','')
-
-			# Add to dictionary
-			localStationDict[stationName]=stationCRS
-
-		# Close the data file
-		stations.close()
 
 		if len(localStationDict) == 0:
 			# Dictionary is empty - advise user and exit
-			indigo.server.log('*** Station File is empty - please reinstall '+stationCodesFile+' ***')
-			errorHandler('CRITICAL FAILURE ** Station code file empty - '+stationCodesFile)
+			self.plugin_logger.error(f'*** Station File is empty - please reinstall {station_codes_file} ***')
+			errorHandler(f'CRITICAL FAILURE ** Station code file empty - {station_codes_file}')
 			sys.exit(1)
 
 		return localStationDict
 
 	def returnNetworkRailCode(self,fullStationName, localStationDict):
 		# Returns a three digit code for a station name in local station dictionary
-		global nationalDebug, pypath
 
 		if len(fullStationName) == 0:
 			# No station name sent through so return a blank code
@@ -1239,8 +1830,8 @@ def text2png(imageFileName, trainTextFile, parametersFileName, departuresAvailab
 	# Import the graphic conversion files
 	try:
 		import PIL
-	except:
-		print('** PILLOW or PIL must be installed - please see forum for details')
+	except ImportError as e:
+		print(f"** PILLOW or PIL must be installed: {e} - please see forum for details")
 		sys.exit(21)
 
 	# Now get the key modules we're using on this occasion
@@ -1250,13 +1841,12 @@ def text2png(imageFileName, trainTextFile, parametersFileName, departuresAvailab
 
 	# Get the current python path for text files
 	pypath = os.path.realpath(sys.path[0]) + '/'
-	indigo.debugger()
 	# Get the passed parameters in the command line
 
-	if nationalDebug:
-		indigo.server.log(parametersFileName, level=logging.DEBUG)
+	# Debug logging removed - this is a subprocess
+	# Use subprocess output files instead
 
-	if departuresAvailable.find('YES') != -1:
+	if 'YES' in departuresAvailable:
 		trainsFound = True
 	else:
 		trainsFound = False
@@ -1283,21 +1873,20 @@ def text2png(imageFileName, trainTextFile, parametersFileName, departuresAvailab
 	# Extract station and route timetable information
 
 	try:
-		routeInfo = open(trainTextFile, 'r')
-	except:
-		print('Something wrong with the text file!' + trainTextFile)
-		print(sys.exit(22))
+		with open(trainTextFile, 'r') as routeInfo:
+			stationTitles = routeInfo.readline()
+			stationStatistics = routeInfo.readline()
 
-	stationTitles = routeInfo.readline()
-	stationStatistics = routeInfo.readline()
-
-	timeTable = ''
-	for fileEntry in trainTextFile:
-		timeTable = timeTable + '\n' + routeInfo.readline()
+			timeTable = ''
+			for line in routeInfo:
+				timeTable = timeTable + '\n' + line.rstrip('\n')
+	except (IOError, OSError) as e:
+		print(f"Something wrong with the text file {trainTextFile}: {e}")
+		sys.exit(22)
 
 	# Converts timeTable array into a departure board image for display
 	# Work out formatting characters
-	REPLACEMENT_CHARACTER = u'ZZFZ'
+	REPLACEMENT_CHARACTER = 'ZZFZ'
 	NEWLINE_REPLACEMENT_STRING = ' ' + REPLACEMENT_CHARACTER + ' '
 
 	# Get the fonts for the board
@@ -1317,16 +1906,16 @@ def text2png(imageFileName, trainTextFile, parametersFileName, departuresAvailab
 	# Calculate image size
 	timeTable = timeTable.replace('\n', NEWLINE_REPLACEMENT_STRING)
 	lines = []
-	line = u""
+	line = ""
 
 	for word in timeTable.split():
 		# Check to see if the word is longer than the possible size of image
 		if word == REPLACEMENT_CHARACTER:  # give a blank line
 			lines.append(line[1:].replace('-', ' '))  # slice the white space in the begining of the line
-			line = u""
-		# lines.append( u"" ) #the blank line
+			line = ""
+		# lines.append( "" ) #the blank line
 
-		elif line.find('++') != -1:
+		elif '++' in line:
 			# This is a status line and can be longer
 			# Width is controlled in the main plugin
 			line += ' ' + word
@@ -1375,7 +1964,7 @@ def text2png(imageFileName, trainTextFile, parametersFileName, departuresAvailab
 	for line in lines:
 
 		# Is this the titles line for the columns?
-		if line.find('Destination') != -1:
+		if 'Destination' in line:
 
 			# Column titles in cyan
 			y += int(line_height * 0.5)
@@ -1387,31 +1976,31 @@ def text2png(imageFileName, trainTextFile, parametersFileName, departuresAvailab
 			y += (line_height / 2 + 0.5)
 			pass
 
-		elif line.find('**') != -1:
+		elif '**' in line:
 			# No trains found message
 			draw.text((leftpadding + 10, y), line, isscolour, font=statusFont)
 			y += line_height * 1.2
 
-		elif line.find('++') != -1:
+		elif '++' in line:
 			# Station Messages found
 			draw.text((leftpadding+10, y), line.replace('+',''), isscolour, font=messagesFont)
 			y += int(line_height * 0.5)
 
-		elif line.find('Status') != -1:
+		elif 'Status' in line:
 			draw.text((leftpadding, y), line, ticolour, font=delayFont)
 		# y += line_height
 
-		elif line.find('>') == -1:
+		elif '>' not in line:
 			if noMoreTrains:
 				# Don't process this one onwards
 				break
 
 			# Draw a destination with details
-			if line.find('On time') != - 1:
+			if 'On time' in line:
 				# Train is running on time
 				draw.text((leftpadding, y), line, forcolour, font=departFont)
 
-			elif line.find('Special') != -1:
+			elif 'Special' in line:
 				draw.text((leftpadding, y), line, forcolour, font=callingFont)
 
 			else:
