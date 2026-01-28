@@ -35,6 +35,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Tuple, Optional, List, Any
 
+try:
+	from pydantic import BaseModel, Field, field_validator, HttpUrl
+except ImportError:
+	# Pydantic not available - will use basic validation only
+	BaseModel = None
+	Field = None
+	field_validator = None
+	HttpUrl = None
+
 
 try:
 	import indigo
@@ -60,6 +69,97 @@ class PluginConfig:
 	station_dict: Dict[str, str]
 	error_log_path: Path
 	pytz_available: bool
+
+
+# ========== Pydantic Configuration Models ==========
+
+if BaseModel is not None:
+	class DarwinAPIConfig(BaseModel):
+		"""Configuration for Darwin API access"""
+		api_key: str = Field(min_length=10, description="Darwin API key")
+		wsdl_url: str = Field(
+			default="https://lite.realtime.nationalrail.co.uk/OpenLDBWS/wsdl.aspx",
+			description="Darwin WSDL endpoint"
+		)
+
+		@field_validator('api_key')
+		@classmethod
+		def validate_api_key(cls, v: str) -> str:
+			if v == 'NO KEY' or v == 'NO KEY ENTERED' or v.strip() == '':
+				raise ValueError('Valid Darwin API key required')
+			if len(v) < 10:
+				raise ValueError('Darwin API key must be at least 10 characters')
+			return v
+
+
+	class UpdateConfig(BaseModel):
+		"""Configuration for update frequency"""
+		frequency_seconds: int = Field(
+			default=60,
+			ge=30,  # Greater than or equal to 30
+			le=600,  # Less than or equal to 600
+			description="Update frequency in seconds"
+		)
+
+
+	class ImageConfig(BaseModel):
+		"""Configuration for image generation"""
+		create_images: bool = Field(default=True, description="Enable image generation")
+		image_path: Optional[str] = Field(default=None, description="Path for generated images")
+		font_path: str = Field(default="/Library/Fonts", description="Path to fonts directory")
+		include_calling_points: bool = Field(default=False, description="Include calling points in display")
+
+		# Color configurations
+		normal_color: str = Field(default="#0F0", description="Normal service foreground color")
+		background_color: str = Field(default="#000", description="Background color")
+		issue_color: str = Field(default="#F00", description="Issue/problem color")
+		calling_points_color: str = Field(default="#FFF", description="Calling points color")
+		title_color: str = Field(default="#0FF", description="Title text color")
+
+		@field_validator('image_path')
+		@classmethod
+		def validate_image_path(cls, v: Optional[str]) -> Optional[str]:
+			if v is not None and v.strip() != '':
+				path = Path(v)
+				if not path.parent.exists() and not path.exists():
+					raise ValueError(f'Directory does not exist: {v}')
+			return v
+
+
+	class PluginConfiguration(BaseModel):
+		"""Complete plugin configuration with validation"""
+		darwin: DarwinAPIConfig
+		update: UpdateConfig
+		image: ImageConfig
+		debug: bool = Field(default=False, description="Enable debug logging")
+
+		@classmethod
+		def from_plugin_prefs(cls, prefs: dict) -> 'PluginConfiguration':
+			"""Create configuration from Indigo plugin preferences"""
+			return cls(
+				darwin=DarwinAPIConfig(
+					api_key=prefs.get('darwinAPI', 'NO KEY'),
+					wsdl_url=prefs.get('darwinSite', 'https://lite.realtime.nationalrail.co.uk/OpenLDBWS/wsdl.aspx')
+				),
+				update=UpdateConfig(
+					frequency_seconds=int(prefs.get('updateFreq', 60))
+				),
+				image=ImageConfig(
+					create_images=prefs.get('createMaps', True) in [True, 'true', 'YES', 'yes'],
+					image_path=prefs.get('imageFilename'),
+					font_path=prefs.get('fontPath', '/Library/Fonts'),
+					include_calling_points=prefs.get('includeCalling', False),
+					normal_color=prefs.get('forcolour', '#0F0'),
+					background_color=prefs.get('bgcolour', '#000'),
+					issue_color=prefs.get('isscolour', '#F00'),
+					calling_points_color=prefs.get('cpcolour', '#FFF'),
+					title_color=prefs.get('ticolour', '#0FF')
+				),
+				debug=prefs.get('checkboxDebug1', False)
+			)
+else:
+	# Pydantic not available - define placeholder
+	PluginConfiguration = None
 
 
 # ========== Module-level pytz check (runs at import time) ==========
@@ -899,6 +999,20 @@ class Plugin(indigo.PluginBase):
 		indigo.PluginBase.__init__(self, pluginId, pluginDisplayName, pluginVersion, pluginPrefs)
 
 		self.validatePrefsConfigUi(pluginPrefs)
+
+		# Validate configuration using Pydantic
+		if PluginConfiguration is not None:
+			try:
+				self.validated_config = PluginConfiguration.from_plugin_prefs(pluginPrefs)
+				indigo.server.log("Configuration validated successfully", level=logging.INFO)
+			except Exception as e:
+				indigo.server.log(f"Configuration validation failed: {e}", level=logging.ERROR)
+				indigo.server.log("Continuing with default configuration. Please check plugin settings.", level=logging.WARNING)
+				# Continue with defaults but log error
+				self.validated_config = None
+		else:
+			indigo.server.log("Pydantic not available - using basic validation only", level=logging.WARNING)
+			self.validated_config = None
 
 		# Initialize plugin configuration (replaces global variables)
 		self.config = PluginConfig(
