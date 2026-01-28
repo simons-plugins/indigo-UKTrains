@@ -17,11 +17,6 @@ from mocks.mock_indigo import MockIndigo
 mock_indigo_instance = MockIndigo()
 sys.modules['indigo'] = mock_indigo_instance
 
-# Also mock requirements module
-mock_requirements = MagicMock()
-mock_requirements.requirements_check = Mock()
-sys.modules['requirements'] = mock_requirements
-
 # Now it's safe to add plugin directory to path
 plugin_dir = Path(__file__).parent.parent / "UKTrains.indigoPlugin" / "Contents" / "Server Plugin"
 sys.path.insert(0, str(plugin_dir))

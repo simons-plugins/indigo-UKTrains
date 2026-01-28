@@ -34,7 +34,7 @@ from subprocess import call
 
 
 try:
-	import indigo, requirements
+	import indigo
 except ImportError as e:
 	print(f"This programme must be run from inside indigo pro 6: {e}")
 	sys.exit(0)
@@ -943,13 +943,6 @@ class Plugin(indigo.PluginBase):
 
 	def startup(self):
 		global nationalDebug, stationDict, pypath
-
-		try:
-			requirements.requirements_check(self.pluginid)
-		except ImportError as exception_error:
-			self.logger.critical(f"PLUGIN STOPPED: {exception_error}")
-			self.do_not_start_devices = True
-			self.stopPlugin()
 
 		if nationalDebug:
 			indigo.server.log('Initiating Plugin Startup module...', level=logging.DEBUG)
