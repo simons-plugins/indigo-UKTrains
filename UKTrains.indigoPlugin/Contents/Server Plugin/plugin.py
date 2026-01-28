@@ -34,6 +34,8 @@ from subprocess import call
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Tuple, Optional, List, Any
+import logging
+from logging.handlers import RotatingFileHandler
 
 try:
 	from pydantic import BaseModel, Field, field_validator, HttpUrl
@@ -50,13 +52,76 @@ try:
 except ImportError as e:
 	print(f"This programme must be run from inside indigo pro 6: {e}")
 	sys.exit(0)
-import logging
 import constants
 
 try:
 	import pytz
 except ImportError:
 	pass
+
+
+# ========== Plugin Logger Class ==========
+
+class PluginLogger:
+	"""Structured logger for UK-Trains plugin with rotating file handler"""
+
+	def __init__(self, plugin_id: str, log_dir: Path, debug: bool = False):
+		"""
+		Initialize plugin logger.
+
+		Args:
+			plugin_id: Unique plugin identifier
+			log_dir: Directory for log files
+			debug: Enable debug-level logging
+		"""
+		self.logger = logging.getLogger(f'Plugin.{plugin_id}')
+		self.logger.setLevel(logging.DEBUG if debug else logging.INFO)
+
+		# Remove existing handlers
+		self.logger.handlers.clear()
+
+		# Create rotating file handler (1MB max, 5 backups)
+		log_file = log_dir / 'UKTrains.log'
+		file_handler = RotatingFileHandler(
+			log_file,
+			maxBytes=1_000_000,  # 1 MB
+			backupCount=5
+		)
+		file_handler.setLevel(logging.DEBUG)
+
+		# Create formatter with timestamp, level, function, line number
+		formatter = logging.Formatter(
+			'%(asctime)s - %(name)s - %(levelname)s - %(funcName)s:%(lineno)d - %(message)s',
+			datefmt='%Y-%m-%d %H:%M:%S'
+		)
+		file_handler.setFormatter(formatter)
+
+		self.logger.addHandler(file_handler)
+
+	def debug(self, msg: str, **kwargs):
+		"""Log debug message"""
+		self.logger.debug(msg, **kwargs)
+
+	def info(self, msg: str, **kwargs):
+		"""Log info message"""
+		self.logger.info(msg, **kwargs)
+
+	def warning(self, msg: str, **kwargs):
+		"""Log warning message"""
+		self.logger.warning(msg, **kwargs)
+
+	def error(self, msg: str, **kwargs):
+		"""Log error message"""
+		self.logger.error(msg, **kwargs)
+
+	def exception(self, msg: str):
+		"""Log exception with traceback"""
+		self.logger.exception(msg)
+
+	def set_debug(self, enabled: bool):
+		"""Enable/disable debug logging"""
+		level = logging.DEBUG if enabled else logging.INFO
+		self.logger.setLevel(level)
 
 
 # ========== Plugin Configuration Class ==========
@@ -178,17 +243,30 @@ _MODULE_PYPATH = _MODULE_PYPATH + '/'
 # Note: This function remains at module level for backward compatibility
 # It will be refactored in a future phase
 
-# TODO: Make this configurable via PluginConfig
-_MODULE_ERROR_FILE = '/Library/Application Support/Perceptive Automation/Indigo 2023.2/Logs/NationRailErrors.log'
-
-def errorHandler(myError):
-	# Note: Always logs errors for debugging
-	# Debug flag check removed - errors are important enough to always log
-	with open(_MODULE_ERROR_FILE, 'a') as f:
-		f.write('-' * 80 + '\n')
-		f.write('Exception Logged:' + str(time.strftime(time.asctime())) + ' in ' + myError + ' module' + '\n\n')
-		exc_type, exc_value, exc_traceback = sys.exc_info()
-		traceback.print_exception(exc_type, exc_value, exc_traceback,limit=2, file=f)
+def errorHandler(error_msg: str):
+	"""
+	Legacy error handler for backward compatibility.
+	Logs to plugin logger if available, otherwise falls back to print.
+	"""
+	# Try to get logger from global plugin instance
+	try:
+		if hasattr(sys.modules['__main__'], 'plugin'):
+			plugin = sys.modules['__main__'].plugin
+			if hasattr(plugin, 'plugin_logger'):
+				plugin.plugin_logger.error(error_msg)
+				# Also log the exception traceback if available
+				exc_info = sys.exc_info()
+				if exc_info[0] is not None:
+					plugin.plugin_logger.exception(error_msg)
+				return
+		# Fallback: print to stderr
+		print(f"ERROR: {error_msg}", file=sys.stderr)
+		exc_info = sys.exc_info()
+		if exc_info[0] is not None:
+			traceback.print_exception(*exc_info, limit=2, file=sys.stderr)
+	except Exception:
+		# Last resort: just print
+		print(f"ERROR: {error_msg}", file=sys.stderr)
 
 
 # Get darwin access modules and other standard dependencies in place
@@ -1000,18 +1078,26 @@ class Plugin(indigo.PluginBase):
 
 		self.validatePrefsConfigUi(pluginPrefs)
 
+		# Create structured logger
+		log_dir = Path.home() / 'Library' / 'Application Support' / 'Perceptive Automation' / 'Indigo 2023.2' / 'Logs'
+		log_dir.mkdir(parents=True, exist_ok=True)
+
+		debug_enabled = pluginPrefs.get('checkboxDebug1', False)
+		self.plugin_logger = PluginLogger(pluginId, log_dir, debug_enabled)
+		self.plugin_logger.info(f"{pluginDisplayName} v{pluginVersion} initializing")
+
 		# Validate configuration using Pydantic
 		if PluginConfiguration is not None:
 			try:
 				self.validated_config = PluginConfiguration.from_plugin_prefs(pluginPrefs)
-				indigo.server.log("Configuration validated successfully", level=logging.INFO)
+				self.plugin_logger.info("Configuration validated successfully")
 			except Exception as e:
-				indigo.server.log(f"Configuration validation failed: {e}", level=logging.ERROR)
-				indigo.server.log("Continuing with default configuration. Please check plugin settings.", level=logging.WARNING)
+				self.plugin_logger.error(f"Configuration validation failed: {e}")
+				self.plugin_logger.warning("Continuing with default configuration. Please check plugin settings.")
 				# Continue with defaults but log error
 				self.validated_config = None
 		else:
-			indigo.server.log("Pydantic not available - using basic validation only", level=logging.WARNING)
+			self.plugin_logger.warning("Pydantic not available - using basic validation only")
 			self.validated_config = None
 
 		# Initialize plugin configuration (replaces global variables)
@@ -1028,7 +1114,7 @@ class Plugin(indigo.PluginBase):
 		travelVersionFile = 'https://www.dropbox.com/s/62kahe2nh848b65/iTravelVersionInfo.html?dl=1'
 
 		if self.config.debug:
-			indigo.server.log('Initiating Plugin Class...', level=logging.DEBUG)
+			self.plugin_logger.debug('Initiating Plugin Class...')
 
 	def __del__(self):
 		indigo.PluginBase.__del__(self)
@@ -1102,7 +1188,7 @@ class Plugin(indigo.PluginBase):
 	def validatePrefsConfigUi(self, devProps):
 
 		if self.config.debug:
-			indigo.server.log('Validating Config file...')
+			self.plugin_logger.debug('Validating Config file...')
 
 		errorDict = indigo.Dict()
 		if 'darwinAPI' in devProps:
@@ -1141,7 +1227,7 @@ class Plugin(indigo.PluginBase):
 
 				try:
 					if self.config.debug:
-						indigo.server.log('Trying to create file '+devProps['imageFilename']+'/filecheck.txt')
+						self.plugin_logger.debug('Trying to create file '+devProps['imageFilename']+'/filecheck.txt')
 
 					f=open(devProps['imageFilename']+'/filecheck.txt','w')
 					f.close()
@@ -1213,7 +1299,7 @@ class Plugin(indigo.PluginBase):
 	def _refreshStatesFromHardware(self, dev):
 		# Send status updates to the indigo log
 		if self.config.debug:
-			indigo.server.log("RGB States check called")
+			self.plugin_logger.debug("RGB States check called")
 
 	########################################
 	def deviceStartComm(self, dev):
@@ -1238,19 +1324,19 @@ class Plugin(indigo.PluginBase):
 		# Ignore turn on/off/toggle requests from clients since this is a read-only sensor.
 		if action.sensorAction == indigo.kSensorAction.TurnOn:
 			if self.config.debug:
-				indigo.server.log(f'ignored "{dev.name}" on request (sensor is read-only)', level=logging.DEBUG)
+				self.plugin_logger.debug(f'ignored "{dev.name}" on request (sensor is read-only)')
 
 		###### TURN OFF ######
 		# Ignore turn on/off/toggle requests from clients since this is a read-only sensor.
 		elif action.sensorAction == indigo.kSensorAction.TurnOff:
 			if self.config.debug:
-				indigo.server.log(f'ignored "{dev.name}" off request (sensor is read-only)', level=logging.DEBUG)
+				self.plugin_logger.debug(f'ignored "{dev.name}" off request (sensor is read-only)')
 
 		###### TOGGLE ######
 		# Ignore turn on/off/toggle requests from clients since this is a read-only sensor.
 		elif action.sensorAction == indigo.kSensorAction.Toggle:
 			if self.config.debug:
-				indigo.server.log(f'ignored "{dev.name}" toggle request (sensor is read-only)', level=logging.DEBUG)
+				self.plugin_logger.debug(f'ignored "{dev.name}" toggle request (sensor is read-only)')
 
 	########################################
 	# General Action callback
@@ -1260,19 +1346,19 @@ class Plugin(indigo.PluginBase):
 		if action.deviceAction == indigo.kDeviceGeneralAction.Beep:
 			# Beep the hardware module (dev) here:
 			# ** IMPLEMENT ME **
-			indigo.server.log(f'sent "{dev.name}" beep request', level=logging.DEBUG)
+			self.plugin_logger.debug(f'sent "{dev.name}" beep request')
 
 		###### ENERGY UPDATE ######
 		elif action.deviceAction == indigo.kDeviceGeneralAction.EnergyUpdate:
 			# Request hardware module (dev) for its most recent meter data here:
 			# ** IMPLEMENT ME **
-			indigo.server.log(f'sent "{dev.name}" energy update request', level=logging.DEBUG)
+			self.plugin_logger.debug(f'sent "{dev.name}" energy update request')
 
 		###### ENERGY RESET ######
 		elif action.deviceAction == indigo.kDeviceGeneralAction.EnergyReset:
 			# Request that the hardware module (dev) reset its accumulative energy usage data here:
 			# ** IMPLEMENT ME **
-			indigo.server.log(f'sent "{dev.name}" energy reset request', level=logging.DEBUG)
+			self.plugin_logger.debug(f'sent "{dev.name}" energy reset request')
 
 		###### STATUS REQUEST ######
 		elif action.deviceAction == indigo.kDeviceGeneralAction.RequestStatus:
@@ -1286,22 +1372,25 @@ class Plugin(indigo.PluginBase):
 			# and call the common function to update the thermo-specific data
 			self._refreshStatesFromHardware(dev)
 			if self.config.debug:
-				indigo.server.log(f'sent "{dev.name}" status request', level=logging.DEBUG)
+				self.plugin_logger.debug(f'sent "{dev.name}" status request')
 
 	def startup(self):
 
-		if self.config.debug:
-			indigo.server.log('Initiating Plugin Startup module...', level=logging.DEBUG)
+		self.plugin_logger.info("UK-Trains plugin startup")
 
-		if self.pluginPrefs.get('checkboxDebug1',False):
-			indigo.server.log("startup called")
+		# Update log level if debug setting changed
+		debug_enabled = self.pluginPrefs.get('checkboxDebug1', False)
+		self.plugin_logger.set_debug(debug_enabled)
+		self.config.debug = debug_enabled
+
+		if self.config.debug:
+			self.plugin_logger.debug('Initiating Plugin Startup module...')
 
 		# Get configuration
 		apiKey = self.pluginPrefs.get('darwinAPI', 'NO KEY')
 		dawinURL = self.pluginPrefs.get('darwinSite', 'No URL')
 		stationImage = self.pluginPrefs.get('createMaps', "true")
 		refreshFreq = int(self.pluginPrefs.get('updateFreq','60'))
-		self.config.debug = self.pluginPrefs.get('checkboxDebug1', False)
 
 		if stationImage:
 			imagePath= self.pluginPrefs.get('imageFilename', '/Users')
@@ -1322,7 +1411,7 @@ class Plugin(indigo.PluginBase):
 			dev.stateListOrDisplayStateIdChanged()
 
 	def shutdown(self):
-		indigo.server.log("shutdown called")
+		self.plugin_logger.info("UK-Trains plugin shutdown")
 
 	########################################
 	def runConcurrentThread(self):
@@ -1401,10 +1490,10 @@ class Plugin(indigo.PluginBase):
 				# Checking
 				# Test mode only
 				if self.config.debug:
-					indigo.server.log('Device:'+dev.name+' being checked now...', level=logging.DEBUG)
+					self.plugin_logger.debug('Device:'+dev.name+' being checked now...')
 
 				if self.config.debug:
-					indigo.server.log(dev.name+' is '+ str(dev.states['deviceActive']), level=logging.DEBUG)
+					self.plugin_logger.debug(dev.name+' is '+ str(dev.states['deviceActive']))
 
 				if dev.states['deviceActive']:
 					dev.updateStateOnServer('stationLong', value = dev.pluginProps['stationName'])
@@ -1422,7 +1511,7 @@ class Plugin(indigo.PluginBase):
 						dev.updateStateImageOnServer(indigo.kStateImageSel.SensorOff)
 						dev.updateStateOnServer('deviceStatus', value = 'Awaiting update')
 						if self.config.debug:
-							indigo.server.log('** Error updating device '+dev.name+' SOAP server failure **')
+							self.plugin_logger.error('** Error updating device '+dev.name+' SOAP server failure **')
 					else:
 						# Success
 						if dev.states["stationIssues"]:
@@ -1433,7 +1522,7 @@ class Plugin(indigo.PluginBase):
 							dev.updateStateOnServer('deviceStatus', value = 'Running on time')
 
 						if self.config.debug:
-							indigo.server.log('** Sucessfully updated:'+dev.name+' **')
+							self.plugin_logger.debug('** Sucessfully updated:'+dev.name+' **')
 
 				else:
 					dev.updateStateImageOnServer(indigo.kStateImageSel.SensorOff)
@@ -1474,7 +1563,7 @@ class Plugin(indigo.PluginBase):
 			stations = open(stationCodesFile,"r")
 		except (IOError, OSError) as e:
 			# Couldn't find stations file - advise user and exit
-			indigo.server.log(f"*** Could not open station code file {stationCodesFile}: {e} ***")
+			self.plugin_logger.error(f"*** Could not open station code file {stationCodesFile}: {e} ***")
 			errorHandler('CRITICAL FAILURE ** Station Code file missing - '+stationCodesFile)
 			sys.exit(1)
 		indigo.debugger()
@@ -1528,7 +1617,7 @@ class Plugin(indigo.PluginBase):
 			stations = open(stationCodesFile,"r")
 		except (IOError, OSError) as e:
 			# Couldn't find stations file - advise user and exit
-			indigo.server.log(f"*** Could not open station code file {stationCodesFile}: {e} ***")
+			self.plugin_logger.error(f"*** Could not open station code file {stationCodesFile}: {e} ***")
 			errorHandler('CRITICAL FAILURE ** Station Code file missing - '+stationCodesFile)
 			sys.exit(1)
 
@@ -1547,7 +1636,7 @@ class Plugin(indigo.PluginBase):
 
 		if len(localStationDict) == 0:
 			# Dictionary is empty - advise user and exit
-			indigo.server.log('*** Station File is empty - please reinstall '+stationCodesFile+' ***')
+			self.plugin_logger.error('*** Station File is empty - please reinstall '+stationCodesFile+' ***')
 			errorHandler('CRITICAL FAILURE ** Station code file empty - '+stationCodesFile)
 			sys.exit(1)
 
