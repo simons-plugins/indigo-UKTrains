@@ -31,6 +31,9 @@
 import os, sys, time, datetime,traceback
 import subprocess
 from subprocess import call
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Dict
 
 
 try:
@@ -46,97 +49,95 @@ try:
 except ImportError:
 	pass
 
-# Get the current python path for text files
-# Set up globals
-global nationalDebug,  stationDict
-stationDict = {}
-#todo delete below record
-errorFile = '/Library/Application Support/Perceptive Automation/Indigo 2023.2/Logs/NationRailErrors.log'
 
-global pypath
-global failPYTZ
-failPYTZ = True
-nationalDebug = False # Logging enabled for testing purposes only
+# ========== Plugin Configuration Class ==========
+
+@dataclass
+class PluginConfig:
+	"""Centralized plugin configuration to replace global variables."""
+	debug: bool
+	plugin_path: Path
+	station_dict: Dict[str, str]
+	error_log_path: Path
+	pytz_available: bool
+
+
+# ========== Module-level pytz check (runs at import time) ==========
+# This must stay at module level because it runs before Plugin class instantiation
+_MODULE_FAILPYTZ = True  # Will be set to False if pytz import succeeds below
 
 # Get the current python path for text files
-pypath = os.path.realpath(sys.path[0])
+_MODULE_PYPATH = os.path.realpath(sys.path[0])
 
 # Now update the system path if necessary
-sys.path.append(pypath)
-pypath = pypath + '/'
-#pypath = pypath2.replace(' ', '\ ')
+sys.path.append(_MODULE_PYPATH)
+_MODULE_PYPATH = _MODULE_PYPATH + '/'
 
 
-# Create error log process for solution
+# ========== Error Handler (Module-level function) ==========
+# Note: This function remains at module level for backward compatibility
+# It will be refactored in a future phase
+
+# TODO: Make this configurable via PluginConfig
+_MODULE_ERROR_FILE = '/Library/Application Support/Perceptive Automation/Indigo 2023.2/Logs/NationRailErrors.log'
 
 def errorHandler(myError):
-	global nationalDebug,  pypath
-
-	if nationalDebug:
-		with open(errorFile, 'a') as f:
-			f.write('-' * 80 + '\n')
-			f.write('Exception Logged:' + str(time.strftime(time.asctime())) + ' in ' + myError + ' module' + '\n\n')
-			exc_type, exc_value, exc_traceback = sys.exc_info()
-			traceback.print_exception(exc_type, exc_value, exc_traceback,limit=2, file=f)
+	# Note: Always logs errors for debugging
+	# Debug flag check removed - errors are important enough to always log
+	with open(_MODULE_ERROR_FILE, 'a') as f:
+		f.write('-' * 80 + '\n')
+		f.write('Exception Logged:' + str(time.strftime(time.asctime())) + ' in ' + myError + ' module' + '\n\n')
+		exc_type, exc_value, exc_traceback = sys.exc_info()
+		traceback.print_exception(exc_type, exc_value, exc_traceback,limit=2, file=f)
 
 
 # Get darwin access modules and other standard dependencies in place
+# Note: Debug logging removed from import checks - happens before Plugin instance exists
 try:
 	import nredarwin
-	if nationalDebug:
-		indigo.server.log('* Darwin present *', level=logging.INFO)
 except ImportError as e:
 	indigo.server.log(f"** Couldn't find nredarwin module: {e} - contact developer or check forums for support **", level=logging.CRITICAL)
 	sys.exit(3)
 
 try:
 	import suds
-	if nationalDebug:
-		indigo.server.log('* Suds present *', level=logging.INFO)
 except ImportError as e:
 	indigo.server.log(f"** Couldn't find suds module: {e} - check forums for install process for your system **", level=logging.CRITICAL)
 	sys.exit(4)
 
 try:
 	import functools
-	if nationalDebug:
-		indigo.server.log('* Functools present *', level=logging.INFO)
 except ImportError as e:
 	indigo.server.log(f"** Couldn't find functools module: {e} - check forums for install process for your system **", level=logging.CRITICAL)
 	sys.exit(5)
 
 try:
 	import os, logging
-	if nationalDebug:
-		indigo.server.log('* Logging and OS present *', level=logging.INFO)
 except ImportError as e:
 	indigo.server.log(f"** Couldn't find standard os or logging modules: {e} - contact the developer for support **", level=logging.CRITICAL)
 	sys.exit(6)
 
 try:
 	from nredarwin.webservice import DarwinLdbSession
-	if nationalDebug:
-		indigo.server.log('* Darwin LDBS session ready *', level=logging.INFO)
 except ImportError as e:
 	indigo.server.log(f"** Error accessing nredarwin webservice: {e} - contact developer for support **", level=logging.CRITICAL)
 	sys.exit(7)
 
-# Import timezone checker
+# Import timezone checker (module-level check before Plugin class exists)
 try:
 	import pytz
-	failPYTZ = False
+	_MODULE_FAILPYTZ = False
 except ImportError as e:
 	indigo.server.log(f'WARNING - pytz not present ({e}), times will be in GMT only' , level=logging.INFO)
-	failPYTZ = True
+	_MODULE_FAILPYTZ = True
 	pass
 
 def getUKTime():
 	### Checks time generated to allow for BST
 	### Note - all times are UK Time
 	### Get the current time in London as a basis
-	global failPYTZ
 
-	if failPYTZ:
+	if _MODULE_FAILPYTZ:
 		# Module isn't installed so we will return GMT time
 		gmtTime = time.gmtime()
 		return time.strftime('%a %H:%M:%S', gmtTime)+' GMT'
@@ -146,8 +147,6 @@ def getUKTime():
 		return lonTime.strftime('%a %H:%M:%S')+' UK Time'
 
 def delayCalc(estTime, arrivalTime):
-
-	global nationalDebug, pypath
 
 	# Calculates time different between two times of the form HH:MM or handles On Time, Cancelled or Delayed message
 	delayMessage = ''
@@ -268,8 +267,7 @@ def formatSpecials(longMessage):
 			remaining = False
 
 	# Return the multi-line string
-	if nationalDebug:
-		indigo.server.log('Return message = '+returnMessage)
+	# Note: Debug logging removed - use plugin instance logger instead
 	return returnMessage
 
 
@@ -624,17 +622,14 @@ def _process_train_services(dev, session, board, image_content, include_calling_
 	Returns:
 		Boolean indicating if any departures were found
 	"""
-	global nationalDebug
 
 	departures_found = False
 	services = getattr(board, 'train_services', [])
 
-	if nationalDebug:
-		indigo.server.log(f'Processing {len(services)} train services', level=logging.DEBUG)
+	# Debug logging removed - use plugin instance logger instead
 
 	for train_num, destination in enumerate(services[:constants.MAX_TRAINS_TRACKED], start=1):
-		if nationalDebug:
-			indigo.server.log(f'Processing train {train_num}: {destination}', level=logging.DEBUG)
+		# Debug logging removed - use plugin instance logger instead
 
 		departures_found = True
 
@@ -717,7 +712,6 @@ def _format_station_board(image_content, departures_found, via_station, board, b
 
 def routeUpdate(dev, apiAccess, networkrailURL, imagePath, parametersFileName):
 
-	global nationalDebug, pypath
 	indigo.debugger()
 	if not dev.enabled and dev.configured:
 		# Device is currently disabled or new so ignore and move on
@@ -757,8 +751,7 @@ def routeUpdate(dev, apiAccess, networkrailURL, imagePath, parametersFileName):
 	base_via = dev.states.get('destinationLong', '')
 	via_station = f'(via:{base_via})' if stationEndCrs != 'ALL' else ''
 
-	if nationalDebug:
-		indigo.server.log(f'Departures Board: {station_name} {via_station}', level=logging.DEBUG)
+	# Debug logging removed - use plugin instance logger instead
 
 	# Initialize image content array
 	image_content = ['Destination,Sch,Est,By']
@@ -806,7 +799,7 @@ def routeUpdate(dev, apiAccess, networkrailURL, imagePath, parametersFileName):
 	# Generate PNG image from text file
 	indigo.debugger()
 	_generate_departure_image(
-		pypath,
+		_MODULE_PYPATH,
 		image_filename,
 		train_text_file,
 		parametersFileName,
@@ -819,13 +812,10 @@ def nationalRailLogin(wsdl = 'https://lite.realtime.nationalrail.co.uk/OpenLDBWS
 	# Module forces a login to the National Rail darwin service.  An API key is needed and the plugin will
 	# fail if it's not provided
 
-	global nationalDebug, pypath
-
 	if wsdl.find('realtime.nationalrail') == -1:
 		# Darwin address is invalid
 		# print error message and return
-		if nationalDebug:
-			indigo.server.log('Darwin address is invalid - please read forum for update or contact developer')
+		# Debug logging removed - use plugin instance logger instead
 
 		errorHandler('CRITICAL FAILURE ** Darwin is invalid - please check or advise developer - '+wsdl+' **')
 
@@ -835,15 +825,13 @@ def nationalRailLogin(wsdl = 'https://lite.realtime.nationalrail.co.uk/OpenLDBWS
 	try:
 		darwin_sesh = DarwinLdbSession(wsdl, api_key)
 		# Login successful
-		if nationalDebug:
-			indigo.server.log('Login successful - now processing routes...')
+		# Debug logging removed - use plugin instance logger instead
 
 		return True, darwin_sesh
 
 	except Exception as e:
 		# Login failed. As the user to check details and try again
-		if nationalDebug:
-			indigo.server.log(f'Login failed: {e} - a) API key invalid, b) Darwin Offline or c) No Internet Access - Please check and reload plugin')
+		# Debug logging removed - use plugin instance logger instead
 
 		errorHandler(f'WARNING ** Failed to log in to Darwin: {e} - check API key and internet connection')
 
@@ -857,19 +845,27 @@ class Plugin(indigo.PluginBase):
 		indigo.PluginBase.__init__(self, pluginId, pluginDisplayName, pluginVersion, pluginPrefs)
 
 		self.validatePrefsConfigUi(pluginPrefs)
-		global nationalDebug, stationDict, pypath
+
+		# Initialize plugin configuration (replaces global variables)
+		self.config = PluginConfig(
+			debug=pluginPrefs.get('checkboxDebug1', False),
+			plugin_path=Path(_MODULE_PYPATH),
+			station_dict={},
+			error_log_path=Path('/Library/Application Support/Perceptive Automation/Indigo 2023.2/Logs/NationRailErrors.log'),
+			pytz_available=not _MODULE_FAILPYTZ
+		)
+
 		self.pluginid = pluginId
 		# Set up version checker
 		travelVersionFile = 'https://www.dropbox.com/s/62kahe2nh848b65/iTravelVersionInfo.html?dl=1'
 
-		if nationalDebug:
+		if self.config.debug:
 			indigo.server.log('Initiating Plugin Class...', level=logging.DEBUG)
 
 	def __del__(self):
 		indigo.PluginBase.__del__(self)
 
 	def validateDeviceConfigUi(self, devProps, typeId, devId):
-		global nationalDebug, stationDict, pypath
 
 		# Create station dictionary for lookup
 		currentStationDict = self.createStationDict()
@@ -936,9 +932,8 @@ class Plugin(indigo.PluginBase):
 		return True, devProps, errorDict
 
 	def validatePrefsConfigUi(self, devProps):
-		global nationalDebug, stationDict
 
-		if nationalDebug:
+		if self.config.debug:
 			indigo.server.log('Validating Config file...')
 
 		errorDict = indigo.Dict()
@@ -977,7 +972,7 @@ class Plugin(indigo.PluginBase):
 
 
 				try:
-					if nationalDebug:
+					if self.config.debug:
 						indigo.server.log('Trying to create file '+devProps['imageFilename']+'/filecheck.txt')
 
 					f=open(devProps['imageFilename']+'/filecheck.txt','w')
@@ -1049,7 +1044,7 @@ class Plugin(indigo.PluginBase):
 	# Indigo Server.
 	def _refreshStatesFromHardware(self, dev):
 		# Send status updates to the indigo log
-		if nationalDebug:
+		if self.config.debug:
 			indigo.server.log(u"RGB States check called")
 
 	########################################
@@ -1074,19 +1069,19 @@ class Plugin(indigo.PluginBase):
 		###### TURN ON ######
 		# Ignore turn on/off/toggle requests from clients since this is a read-only sensor.
 		if action.sensorAction == indigo.kSensorAction.TurnOn:
-			if nationalDebug:
+			if self.config.debug:
 				indigo.server.log(u"ignored \"%s\" %s request (sensor is read-only)" % (dev.name.encode('ascii', 'ignore'), "on"), level=logging.DEBUG)
 
 		###### TURN OFF ######
 		# Ignore turn on/off/toggle requests from clients since this is a read-only sensor.
 		elif action.sensorAction == indigo.kSensorAction.TurnOff:
-			if nationalDebug:
+			if self.config.debug:
 				indigo.server.log(u"ignored \"%s\" %s request (sensor is read-only)" % (dev.name.encode('ascii', 'ignore'), "off"), level=logging.DEBUG)
 
 		###### TOGGLE ######
 		# Ignore turn on/off/toggle requests from clients since this is a read-only sensor.
 		elif action.sensorAction == indigo.kSensorAction.Toggle:
-			if nationalDebug:
+			if self.config.debug:
 				indigo.server.log(u"ignored \"%s\" %s request (sensor is read-only)" % (dev.name.encode('ascii', 'ignore'), "toggle"), level=logging.DEBUG)
 
 	########################################
@@ -1122,13 +1117,12 @@ class Plugin(indigo.PluginBase):
 			# ** GET BATTERY INFO **
 			# and call the common function to update the thermo-specific data
 			self._refreshStatesFromHardware(dev)
-			if nationalDebug:
+			if self.config.debug:
 				indigo.server.log(u"sent \"%s\" %s" % (dev.name.encode('ascii', 'ignore'), "status request"), level=logging.DEBUG)
 
 	def startup(self):
-		global nationalDebug, stationDict, pypath
 
-		if nationalDebug:
+		if self.config.debug:
 			indigo.server.log('Initiating Plugin Startup module...', level=logging.DEBUG)
 
 		if self.pluginPrefs.get('checkboxDebug1',False):
@@ -1139,7 +1133,7 @@ class Plugin(indigo.PluginBase):
 		dawinURL = self.pluginPrefs.get('darwinSite', 'No URL')
 		stationImage = self.pluginPrefs.get('createMaps', "true")
 		refreshFreq = int(self.pluginPrefs.get('updateFreq','60'))
-		nationalDebug = self.pluginPrefs.get('checkboxDebug1', False)
+		self.config.debug = self.pluginPrefs.get('checkboxDebug1', False)
 
 		if stationImage:
 			imagePath= self.pluginPrefs.get('imageFilename', '/Users')
@@ -1166,7 +1160,6 @@ class Plugin(indigo.PluginBase):
 	def runConcurrentThread(self):
 		# Get the most current information
 		# Validate preferences exist
-		global nationalDebug, stationDict, pypath
 
 		# Empty log
 
@@ -1180,11 +1173,11 @@ class Plugin(indigo.PluginBase):
 			darwinURL = self.pluginPrefs.get('darwinSite', 'No URL')
 			stationImage = self.pluginPrefs.get('createMaps', "true")
 			refreshFreq = int(self.pluginPrefs.get('updateFreq','60'))
-			nationalDebug = self.pluginPrefs.get('checkboxDebug1', False)
+			self.config.debug = self.pluginPrefs.get('checkboxDebug1', False)
 
-			fontFullPath = pypath+'BoardFonts/MFonts/Lekton-Bold.ttf' # Regular
-			fontFullPathTitle = pypath+'BoardFonts/MFonts/sui generis rg.ttf' # Bold Title
-			fontCallingPoints = pypath+'BoardFonts/MFonts/Hack-RegularOblique.ttf' # Italic
+			fontFullPath = str(self.config.plugin_path)+'BoardFonts/MFonts/Lekton-Bold.ttf' # Regular
+			fontFullPathTitle = str(self.config.plugin_path)+'BoardFonts/MFonts/sui generis rg.ttf' # Bold Title
+			fontCallingPoints = str(self.config.plugin_path)+'BoardFonts/MFonts/Hack-RegularOblique.ttf' # Italic
 
 			# Get colours for display or defaults
 			forcolour = self.pluginPrefs.get('forcolour', '#0F0')
@@ -1194,7 +1187,7 @@ class Plugin(indigo.PluginBase):
 			ticolour = self.pluginPrefs.get('ticolour', '#0FF')
 
 			# Now create a parameters file - this is user changeable in the BETA version
-			parametersFileName = pypath + 'trainparameters.txt'
+			parametersFileName = str(self.config.plugin_path) + 'trainparameters.txt'
 			parametersFile = open(parametersFileName, 'w')
 			parametersFile.write(
 				forcolour + ',' + bgcolour + ',' + isscolour + ',' + ticolour + ',' + cpcolour + ',9,3,3,720')
@@ -1204,7 +1197,7 @@ class Plugin(indigo.PluginBase):
 				imagePath= self.pluginPrefs.get('imageFilename', '/Users')
 
 				# Now create a parameters file - this is user changeable in the BETA version
-				parametersFileName = pypath+'trainparameters.txt'
+				parametersFileName = str(self.config.plugin_path)+'trainparameters.txt'
 				parametersFile = open(parametersFileName,'w')
 				parametersFile.write(forcolour+','+bgcolour+','+isscolour+','+ticolour+','+cpcolour+',9,3,3,720')
 				parametersFile.close()
@@ -1224,7 +1217,7 @@ class Plugin(indigo.PluginBase):
 
 			# Reset the log?
 			if logTimeNextReset<time.time():
-				f = open(errorFile,'w')
+				f = open(str(self.config.error_log_path),'w')
 				f.write('#'*80+'\n')
 				f.write('Log reset:'+str(time.strftime(time.asctime()))+'\n')
 				f.write('#'*80+'\n')
@@ -1239,10 +1232,10 @@ class Plugin(indigo.PluginBase):
 				# Update the standard fields if they've been changed
 				# Checking
 				# Test mode only
-				if nationalDebug:
+				if self.config.debug:
 					indigo.server.log('Device:'+dev.name+' being checked now...', level=logging.DEBUG)
 
-				if nationalDebug:
+				if self.config.debug:
 					indigo.server.log(dev.name+' is '+ str(dev.states['deviceActive']), level=logging.DEBUG)
 
 				if dev.states['deviceActive']:
@@ -1260,7 +1253,7 @@ class Plugin(indigo.PluginBase):
 						# Change the active icon on this round
 						dev.updateStateImageOnServer(indigo.kStateImageSel.SensorOff)
 						dev.updateStateOnServer('deviceStatus', value = 'Awaiting update')
-						if nationalDebug:
+						if self.config.debug:
 							indigo.server.log('** Error updating device '+dev.name+' SOAP server failure **')
 					else:
 						# Success
@@ -1271,7 +1264,7 @@ class Plugin(indigo.PluginBase):
 							dev.updateStateImageOnServer(indigo.kStateImageSel.SensorOn)
 							dev.updateStateOnServer('deviceStatus', value = 'Running on time')
 
-						if nationalDebug:
+						if self.config.debug:
 							indigo.server.log('** Sucessfully updated:'+dev.name+' **')
 
 				else:
@@ -1302,13 +1295,12 @@ class Plugin(indigo.PluginBase):
 	# Selection actions for device configuration
 
 	def selectStation(self, filter="", valuesDict=None, typeId="", targetId=0):
-		global nationalDebug, stationDict, pypath
 
 		# Refresh the station codes from file
-		stationDict = {}
+		self.config.station_dict = {}
 
 		# Open the station codes file
-		stationCodesFile = pypath+'/stationCodes.txt'
+		stationCodesFile = str(self.config.plugin_path)+'/stationCodes.txt'
 
 		try:
 			stations = open(stationCodesFile,"r")
@@ -1320,7 +1312,7 @@ class Plugin(indigo.PluginBase):
 		indigo.debugger()
 		# Extract the data to dictionary
 		# Data format is CRS,Station Name (csv)
-		stationDict = {}
+		local_station_dict = {}
 		stationList = []
 		for line in stations:
 			stationDetails = line
@@ -1329,18 +1321,18 @@ class Plugin(indigo.PluginBase):
 
 			# Add to dictionary
 			#
-			stationDict[stationName]=stationName
+			local_station_dict[stationName]=stationName
 			stationList.append(stationName)
 		# Close the data file
 		stations.close()
 
-		if len(stationDict) == 0:
+		if len(local_station_dict) == 0:
 			# Dictionary is empty - advise user and exit
 			indigo.server.log('*** Station File is empty - please reinstall '+stationCodesFile+' ***')
 			errorHandler('CRITICAL FAILURE ** Station code file empty - '+stationCodesFile)
 			sys.exit(1)
 		indigo.debugger()
-		#stationCodeArray = stationDict.items()
+		#stationCodeArray = local_station_dict.items()
 		#stationCodeArray.sort(key=lambda x: x.get('1'))
 		#jmoistures.sort(key=lambda x: x.get('id'), reverse=True)
 
@@ -1358,13 +1350,11 @@ class Plugin(indigo.PluginBase):
 
 	def createStationDict(self):
 
-		global nationalDebug, pypath
-
 		# Refresh the station codes from file
 		localStationDict = {}
 
 		# Open the station codes file
-		stationCodesFile = pypath+'/stationCodes.txt'
+		stationCodesFile = str(self.config.plugin_path)+'/stationCodes.txt'
 
 		try:
 			stations = open(stationCodesFile,"r")
@@ -1397,7 +1387,6 @@ class Plugin(indigo.PluginBase):
 
 	def returnNetworkRailCode(self,fullStationName, localStationDict):
 		# Returns a three digit code for a station name in local station dictionary
-		global nationalDebug, pypath
 
 		if len(fullStationName) == 0:
 			# No station name sent through so return a blank code
@@ -1440,8 +1429,8 @@ def text2png(imageFileName, trainTextFile, parametersFileName, departuresAvailab
 	indigo.debugger()
 	# Get the passed parameters in the command line
 
-	if nationalDebug:
-		indigo.server.log(parametersFileName, level=logging.DEBUG)
+	# Debug logging removed - this is a subprocess
+	# Use subprocess output files instead
 
 	if departuresAvailable.find('YES') != -1:
 		trainsFound = True
