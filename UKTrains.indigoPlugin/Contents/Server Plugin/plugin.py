@@ -371,6 +371,303 @@ def _generate_departure_image(plugin_path, image_filename, text_filename,
 
 # ========== End of Phase 3 Helper Functions ==========
 
+
+def _fetch_station_board(session, start_crs, end_crs=None, row_limit=100):
+	"""
+	Fetch station board with optional destination filter.
+
+	Args:
+		session: DarwinLdbSession object for API access
+		start_crs: Starting station CRS code
+		end_crs: Optional destination CRS code (None or 'ALL' for all destinations)
+		row_limit: Maximum number of services to request
+
+	Returns:
+		StationBoard object from Darwin API
+
+	Raises:
+		suds.WebFault: If SOAP request fails
+		Exception: For other API errors
+	"""
+	if end_crs and end_crs != constants.ALL_DESTINATIONS_CRS:
+		# Filtered by destination
+		board = session.get_station_board(
+			start_crs,
+			row_limit,
+			True,   # include_departures
+			False,  # include_arrivals
+			end_crs
+		)
+	else:
+		# All destinations
+		board = session.get_station_board(
+			start_crs,
+			row_limit,
+			True,   # include_departures
+			False   # include_arrivals
+		)
+	return board
+
+
+def _process_special_messages(board, dev, testing_mode=False):
+	"""
+	Extract and format NRCC special messages from station board.
+
+	Args:
+		board: StationBoard object from Darwin API
+		dev: Indigo device object to update with messages
+		testing_mode: Boolean flag for testing (default: False)
+
+	Returns:
+		Formatted special messages string (empty if no messages)
+	"""
+	# Check if there are messages to process
+	has_messages = (hasattr(board, 'nrcc_messages') and
+	                len(board.nrcc_messages) > 0)
+
+	if not has_messages and not testing_mode:
+		return ''
+
+	if testing_mode:
+		# Test message for BETA
+		special_messages = ('This is a test message that would span a lot of lines in the display.  '
+		                   'We need to format it correctly and remove any special characters&nbspBecause '
+		                   'it is so long it will take a lot of lines on the display and this should be managed'
+		                   ' through the maxLines element')
+	else:
+		# Extract real messages from board
+		special_messages = str(board.nrcc_messages)
+
+	# Format the messages (removes HTML, wraps lines, etc.)
+	formatted_messages = formatSpecials(special_messages)
+
+	# Update device state with cleaned messages
+	dev.updateStateOnServer('stationMessages', value=formatted_messages.replace('+', ''))
+
+	return formatted_messages
+
+
+def _fetch_service_details(session, service_id):
+	"""
+	Fetch detailed service information from Darwin API.
+
+	Args:
+		session: DarwinLdbSession object for API access
+		service_id: Unique service identifier
+
+	Returns:
+		ServiceDetails object or None if fetch failed
+	"""
+	try:
+		service = session.get_service_details(service_id)
+		return service
+	except (suds.WebFault, Exception) as e:
+		errorHandler(f'WARNING ** SOAP resolution failed: {e} - will retry later when server less busy **')
+		return None
+
+
+def _build_calling_points_string(service):
+	"""
+	Extract calling points from service and format as string.
+
+	Args:
+		service: ServiceDetails object from Darwin API
+
+	Returns:
+		Formatted calling points string (e.g., "Reading(10:15) Oxford(10:45)")
+	"""
+	try:
+		# Check if subsequent_calling_points exists and is not None
+		calling_points_list = getattr(service, 'subsequent_calling_points', [])
+		if calling_points_list is None:
+			calling_points_list = []
+
+		calling_points = [cp.location_name for cp in calling_points_list]
+		arrival_times = [arrival.st for arrival in calling_points_list]
+		estimated_times = [arrival.et for arrival in calling_points_list]
+	except AttributeError as e:
+		errorHandler(f'WARNING ** SOAP failed on Calling Points access: {e} - try again later **')
+		return ''
+
+	cp_string = ''
+	for cp_index, cpoint in enumerate(calling_points):
+		try:
+			if 'On' in estimated_times[cp_index]:
+				cp_string += cpoint + '(' + arrival_times[cp_index] + ') '
+			else:
+				cp_string += cpoint + '(' + estimated_times[cp_index] + ') '
+		except (AttributeError, IndexError):
+			errorHandler('WARNING - Estimated Time for calling point returned NULL - not critical')
+		except Exception as e:
+			errorHandler(f'WARNING - Estimated Time for calling point - unknown error: {e} - advise developer')
+
+	# Remove redundant "On time" text
+	cp_string = cp_string.replace('On time', '')
+
+	return cp_string
+
+
+def _update_train_device_states(dev, train_num, destination, service, include_calling_points):
+	"""
+	Update all device states for a single train.
+
+	Args:
+		dev: Indigo device object
+		train_num: Train number (1-10)
+		destination: ServiceItem from station board
+		service: ServiceDetails from API
+		include_calling_points: Boolean for whether to include calling points
+	"""
+	# Build state key prefixes
+	train_prefix = f'train{train_num}'
+
+	# Extract service data with null safety
+	dest_text = getattr(destination, 'destination_text', 'Unknown')
+	dest_std = getattr(destination, 'std', '00:00')
+	dest_etd = getattr(destination, 'etd', '00:00')
+	dest_operator = getattr(destination, 'operator_name', 'Unknown')
+
+	# Update basic states
+	dev.updateStateOnServer(f'{train_prefix}Dest', value=dest_text)
+	dev.updateStateOnServer(f'{train_prefix}Op', value=dest_operator)
+	dev.updateStateOnServer(f'{train_prefix}Sch', value=dest_std)
+	dev.updateStateOnServer(f'{train_prefix}Est', value=dest_etd)
+
+	# Calculate and update delay
+	has_problem, delay_msg = delayCalc(dest_std, dest_etd)
+	dev.updateStateOnServer(f'{train_prefix}Delay', value=delay_msg)
+	dev.updateStateOnServer(f'{train_prefix}Issue', value=has_problem)
+
+	# Update reason
+	if 'On Time' in delay_msg:
+		dev.updateStateOnServer(f'{train_prefix}Reason', value='')
+	else:
+		dev.updateStateOnServer(f'{train_prefix}Reason', value='No reason provided')
+
+	# Process calling points if requested
+	if include_calling_points and service:
+		calling_points_str = _build_calling_points_string(service)
+		dev.updateStateOnServer(f'{train_prefix}Calling', value=calling_points_str)
+
+
+def _append_train_to_image(image_content, destination, include_calling_points, service, word_length=80):
+	"""
+	Add train service data to image content array.
+
+	Args:
+		image_content: List to append formatted content to
+		destination: ServiceItem from station board
+		include_calling_points: Boolean for whether to include calling points
+		service: ServiceDetails from API (may be None)
+		word_length: Maximum line length for wrapping
+	"""
+	# Extract destination data
+	dest_text = getattr(destination, 'destination_text', 'Unknown')
+	dest_std = getattr(destination, 'std', '00:00')
+	dest_etd = getattr(destination, 'etd', '00:00')
+	operator_code = getattr(destination, 'operator_code', 'Unknown')
+	operator_name = getattr(destination, 'operator_name', 'Unknown')
+
+	# Calculate delay for display
+	has_problem, delay_msg = delayCalc(dest_std, dest_etd)
+
+	# Format main service line
+	if len(delay_msg.strip()) == 0:
+		destination_content = f"\n{dest_text},{dest_std},{dest_etd},{operator_code}\n"
+		image_content.append(destination_content)
+	else:
+		destination_content = f"\n{dest_text},{dest_std},{dest_etd},{operator_name}"
+		image_content.append(destination_content)
+		delay_message = f'Status:{delay_msg}\n'
+		image_content.append(delay_message)
+
+	# Add calling points if requested
+	if include_calling_points and service:
+		cp_string = _build_calling_points_string(service)
+		if len(cp_string) > 0:
+			# Split long calling points into multiple lines
+			if len(cp_string) <= word_length:
+				# No need to split
+				image_content.append('>>> ' + cp_string)
+			else:
+				# Split at word boundaries
+				remaining = cp_string
+				while len(remaining) > word_length:
+					cut_point = remaining.find(')', word_length - 1)
+					if cut_point != -1:
+						image_content.append('>>> ' + remaining[:cut_point + 1])
+						remaining = remaining[cut_point + 1:].lstrip()
+					else:
+						# No closing paren found, just break
+						break
+
+				# Add remaining text
+				if len(remaining.strip()) != 0:
+					image_content.append('>>> ' + remaining)
+
+
+def _format_station_board(image_content, departures_found, via_station, board, base_via, max_lines=30):
+	"""
+	Format image content array into final departure board display.
+
+	Args:
+		image_content: List of strings containing board data
+		departures_found: Boolean indicating if any departures exist
+		via_station: Display string for destination filter (e.g., "(via: London)")
+		board: StationBoard object for station name
+		base_via: Base destination name without formatting
+		max_lines: Maximum number of lines to include in board
+
+	Returns:
+		Formatted station board string
+	"""
+	if not departures_found:
+		# No trains found - generate appropriate message
+		if len(via_station) != 0:
+			return ("** No departures found from " + board.location_name + " direct to " + base_via +
+			        " today **\n** Check Operators website for more information on current schedule and issues **")
+		else:
+			return ("** No departures found from " + board.location_name +
+			        " today **\n** Check Operators website for more information on current schedule and issues **")
+
+	# Format the departure board from image content
+	station_board = ''
+	tot_lines = 0
+
+	for line_index in range(len(image_content)):
+		current_line = image_content[line_index]
+
+		if current_line.find('Status') != -1:
+			# Status/delay line - keep as is
+			board_line = current_line
+
+		elif current_line.find('>>>') == -1:
+			# Regular destination line - parse and format columns
+			parts = current_line.split(',')
+			if len(parts) >= 4:
+				destination = parts[0] + '-' * 50
+				schedule = parts[1] + '-' * 10
+				estimated = parts[2] + '-' * 10
+				operator = parts[3]
+				board_line = destination[:35] + ' ' + schedule[:10] + estimated[:10] + operator
+			else:
+				# Malformed line, keep as is
+				board_line = current_line
+
+		else:
+			# Calling points line (contains '>>>')
+			board_line = current_line
+
+		station_board = station_board + board_line + '\n'
+
+		# Check line limit
+		tot_lines += 1
+		if tot_lines > max_lines:
+			break
+
+	return station_board
+
+
 def routeUpdate(dev, apiAccess, networkrailURL, imagePath, parametersFileName):
 
 	global nationalDebug, pypath
@@ -395,11 +692,13 @@ def routeUpdate(dev, apiAccess, networkrailURL, imagePath, parametersFileName):
 	# The CRS information will be held against the ROUTE device
 	stationStartCrs = dev.states['stationCRS'] # Codes are found on the National Rail data site and will be provided as a drop list for users
 	stationEndCrs = dev.states['destinationCRS']
+
+	# Fetch station board with optional destination filter
 	try:
-		stationBoardDetails = darwinSession.get_station_board(stationStartCrs)
+		stationBoardDetails = _fetch_station_board(darwinSession, stationStartCrs, stationEndCrs)
 	except (suds.WebFault, Exception) as e:
 		errorHandler(f'WARNING ** SOAP resolution failed: {e} - will retry later when server less busy **')
-		return False # This will generally resolve itself within a min anyway
+		return False
 
 	# Extract information on station and store
 	stationBoardName = getattr(stationBoardDetails, 'location_name', 'Unknown Station')
@@ -417,23 +716,6 @@ def routeUpdate(dev, apiAccess, networkrailURL, imagePath, parametersFileName):
 	else:
 		baseVia = dev.states['destinationLong']
 		viaStation = '(via:' + baseVia + ')'
-
-	# Get the departures board
-	# Filtered
-	if stationEndCrs !='ALL':
-		try:
-			stationBoardDetails = darwinSession.get_station_board(stationStartCrs,100,True,False,stationEndCrs)
-		except (suds.WebFault, Exception) as e:
-			errorHandler(f'WARNING ** SOAP resolution failed: {e} - will retry later when server less busy **')
-			return False
-	else:
-		# All trains departing
-		# Get the departures board
-		try:
-			stationBoardDetails = darwinSession.get_station_board(stationStartCrs,100,True,False)
-		except (suds.WebFault, Exception) as e:
-			errorHandler(f'WARNING ** SOAP resolution failed: {e} - will retry later when server less busy **')
-			return False
 
 	if nationalDebug:
 		# Print debug information
@@ -453,6 +735,7 @@ def routeUpdate(dev, apiAccess, networkrailURL, imagePath, parametersFileName):
 
 	wordLength = 80
 	maxLines = 30
+	include_calling_points = dev.pluginProps.get('includeCalling', False)
 
 	departuresFound = False
 	currentTrain = 0
@@ -460,215 +743,51 @@ def routeUpdate(dev, apiAccess, networkrailURL, imagePath, parametersFileName):
 	if nationalDebug:
 		indigo.server.log('Number of destinations = '+str(len(stationBoardDetails.train_services)), level=logging.DEBUG)
 
+	# Process each train service (up to MAX_TRAINS_TRACKED)
 	for destination in stationBoardDetails.train_services:
 		if nationalDebug:
 			indigo.server.log('Train is = ', str(destination), level=logging.DEBUG)
 
-		# Indigo device is limited to 10 departure services and this will also limit the board as well in this version
+		# Limit to MAX_TRAINS_TRACKED services per device
 		currentTrain += 1
-		if currentTrain > 10:
+		if currentTrain > constants.MAX_TRAINS_TRACKED:
 			break
 
 		departuresFound = True
 
-		# Field names...
-		trainDestination = 'train'+str(currentTrain)+'Dest'
-		trainOperator = 'train'+str(currentTrain)+'Op'
-		trainSch = 'train'+str(currentTrain)+'Sch'
-		trainEst = 'train'+str(currentTrain)+'Est'
-		trainDelay = 'train'+str(currentTrain)+'Delay'
-		trainProblem = 'train'+str(currentTrain)+'Issue'
-		trainReason = 'train'+str(currentTrain)+'Reason'
-		trainCalling = 'train'+str(currentTrain)+'Calling'
+		# Fetch full service details from Darwin API
+		service = _fetch_service_details(darwinSession, destination.service_id)
+		if service is None:
+			# API call failed, skip this service but continue with others
+			continue
 
-		# Get the service informaiton
-		try:
-			service = darwinSession.get_service_details(destination.service_id)
-		except (suds.WebFault, Exception) as e:
-			errorHandler(f'WARNING ** SOAP resolution failed: {e} - will retry later when server less busy **')
-			return False
+		# Update device states for this train
+		_update_train_device_states(dev, currentTrain, destination, service, include_calling_points)
 
-		# Store the data for an image file if needed
-		# Use getattr for null safety on all API response attributes
-		dest_text = getattr(destination, 'destination_text', 'Unknown')
-		dest_std = getattr(destination, 'std', '00:00')
-		dest_etd = getattr(destination, 'etd', '00:00')
-		dest_operator = getattr(destination, 'operator_name', 'Unknown')
-
-		destinationDetails = dest_text + ' ' + dest_std + ' ' + dest_etd + ' Operator: ' + str(dest_operator)
-
-		# Add on the delay to the message in the image file
-		destinationDetails += ' ' + delayCalc(dest_std, dest_etd)[1]
-
-		# Now physically update the device
-		dev.updateStateOnServer(trainDestination, value = dest_text)
-		dev.updateStateOnServer(trainOperator, value = dest_operator)
-		dev.updateStateOnServer(trainSch, value = dest_std)
-		dev.updateStateOnServer(trainEst, value = dest_etd)
-
-		# Calculate any delay to service
-		delayToService = delayCalc(dest_std, dest_etd)
-		dev.updateStateOnServer(trainDelay, value = delayToService[1])
-		dev.updateStateOnServer(trainProblem, value = delayToService[0])
-
-		if 'On Time' in delayToService[1]:
-			dev.updateStateOnServer(trainReason, value = '')
-		else:
-			if trainReason is not None:
-				dev.updateStateOnServer(trainReason, value = str('No reason provided'))
-			else:
-				dev.updateStateOnServer(trainReason, value = '')
-
-		# Now the calling points
-		try:
-			# Check if subsequent_calling_points exists and is not None
-			calling_points_list = getattr(service, 'subsequent_calling_points', [])
-			if calling_points_list is None:
-				calling_points_list = []
-
-			callingPoints = [cp.location_name for cp in calling_points_list]
-			arrivalTimes = [arrival.st for arrival in calling_points_list]
-			estimatedTimes = [arrival.et for arrival in calling_points_list]
-		except AttributeError as e:
-			errorHandler(f'WARNING ** SOAP failed on Calling Points access: {e} - try again later **')
-			return False
-
-		cpIndex = 0
-		cpString = ''
-		departuresFound = True
-
-		for cpoint in callingPoints:
-			try:
-				if estimatedTimes[cpIndex].find('On') != -1:
-					cpString += cpoint + '(' + arrivalTimes[cpIndex]+') '
-				else:
-					cpString += cpoint + '(' + estimatedTimes[cpIndex]+') '
-				cpIndex += 1
-			except AttributeError:
-				errorHandler('WARNING - Estimated Time for calling point returned NULL - not critical')
-
-			except Exception as e:
-				errorHandler(f'WARNING - Estimated Time for calling point - unknown error: {e} - advise developer')
-
-		cpString = cpString.replace('On time', '')
-
-		# Update the device with calling point information if required
-		if dev.pluginProps['includeCalling']:
-			callingContent = cpString
-			dev.updateStateOnServer(trainCalling, value = callingContent)
-
-		# Create the image information and store in imageContent
-		if len(delayCalc(destination.std, destination.etd)[1].strip()) == 0:
-			destinationContent = '\n'+destination.destination_text + ',' + destination.std + ',' + destination.etd + ',' + \
-								 str(destination.operator_code)+'\n'
-			imageContent.append(destinationContent)
-		else:
-			destinationContent = '\n'+destination.destination_text + ',' + destination.std + ',' + destination.etd + ',' + \
-								 str(destination.operator_name)
-			imageContent.append(destinationContent)
-			delayMessage = 'Status:'+delayCalc(destination.std, destination.etd)[1]+'\n'
-			imageContent.append(delayMessage)
-
-		# Calling points for image
-		# Check if calling points wanted in the image
-		if dev.pluginProps['includeCalling']:
-			callingContent = cpString
-			if len(callingContent) > 0:
-				# Is the width longer than the image size
-				if len(callingContent)<=wordLength:
-					# No need to split the line up
-					imageContent.append('>>> ' + callingContent)
-				else:
-					# Split up the line into parts
-					# Find the first ')' after wordLength
-					# First Line
-					cutWordPoint = callingContent.find(')',wordLength-1)
-					imageContent.append('>>> ' + callingContent[:cutWordPoint+1])
-					remainingLine = callingContent[cutWordPoint+1:]
-
-					# Other Lines
-					while len(remainingLine)>wordLength:
-						cutWordPoint = remainingLine.find(')', wordLength)
-						imageContent.append('>>> '+remainingLine[:cutWordPoint+1])
-						remainingLine = remainingLine[cutWordPoint+2:]
-
-					# Now the last piece
-					if len(remainingLine.strip()) != 0:
-						imageContent.append('>>> '+remainingLine)
+		# Build image content for this train
+		_append_train_to_image(imageContent, destination, include_calling_points, service, wordLength)
 
 	# Update station-level issues flag based on train states
 	_update_station_issues_flag(dev)
 
-	# Create Image
-	titleSeparator = '\n'+'-'*80+'\n'
+	# Process special messages from NRCC
+	testingMessages = False  # Test messages flag (remove after BETA)
+	specialMessages = _process_special_messages(stationBoardDetails, dev, testing_mode=testingMessages)
 
-	# Test messages flag (remove after BETA)
-	testingMessages = False
-
-	# The title for the departure board
-	if len(stationBoardDetails.nrcc_messages)>0 or testingMessages:
-		if testingMessages:
-			specialMessages = 'This is a test message that would span a lot of lines in the display.  ' \
-							  'We need to format it correctly and remove any special characters'+u'&nbspBecause '+\
-							  'it is so long it will take a lot of lines on the display and this should be managed'+ \
-							  ' through the maxLines element'
-
-		else:
-			specialMessages = str(stationBoardDetails.nrcc_messages)
-
-		specialMessages = formatSpecials(specialMessages)
-
-	else:
-		specialMessages = ''
-
+	# Prepare departure board titles and metadata
 	departureBoardTitles = ("Departures - "+stationBoardDetails.location_name + ' '+ viaStation + ' '*60)[:60]+'\n'
 	departureStatistics = 'Generated on:' + timeGenerated+'\n'
 	departureMessages = specialMessages+'\n'
 
-	# Update device with messages
-	dev.updateStateOnServer('stationMessages', value = specialMessages.replace('+',''))
-
-	if departuresFound:
-		# Now format the departure content correctly
-		stationBoard = ''
-		newDes = []
-		totLines = 0
-
-		for newLines in range(len(imageContent)):
-
-			if imageContent[newLines].find('Status') != -1:
-				# Departure Details
-				boardLine = imageContent[newLines]
-
-			elif imageContent[newLines].find('>>>') == -1:
-				# This is a destination line
-				newDes = imageContent[newLines].split(',')
-				destination = newDes[0] + '-' * 50
-				schedule = newDes[1] + '-' * 10
-				estimated = newDes[2] + '-' * 10
-				operator = newDes[3]
-				boardLine = destination[:35] + ' ' +schedule[:10] + estimated[:10] + operator
-
-			else:
-				# Calling points
-				boardLine = imageContent[newLines]
-
-			stationBoard = stationBoard + boardLine +'\n'
-
-			# Check it still fits in the image
-			totLines += 1
-			if totLines>maxLines:
-				break
-
-	else:
-		if len(viaStation) != 0:
-			stationBoard = "** No departures found from "+stationBoardDetails.location_name+" direct to "+baseVia\
-						   + " today **\n** Check Operators website for more information on current schedule and issues **"
-		else:
-			stationBoard = "** No departures found from "+stationBoardDetails.location_name\
-						   + " today **\n** Check Operators website for more information on current schedule and issues **"
-
-		dev.updateStateOnServer('stationMessages', value = specialMessages)
+	# Format the station board from image content
+	stationBoard = _format_station_board(
+		imageContent,
+		departuresFound,
+		viaStation,
+		stationBoardDetails,
+		baseVia,
+		max_lines=maxLines
+	)
 
 	# Ready to create image from information
 	# Create a text file for the departure board
