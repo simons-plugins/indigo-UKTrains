@@ -786,7 +786,7 @@ class Plugin(indigo.PluginBase):
 
 					f=open(devProps['imageFilename']+'/filecheck.txt','w')
 					f.close()
-				except:
+				except (IOError, OSError) as e:
 					# Can't open file in location report error to user
 					errorDict = indigo.Dict()
 					errorDict["imageFilename"] = "Invalid path for image files"
@@ -962,9 +962,9 @@ class Plugin(indigo.PluginBase):
 			self.pluginPrefs['updaterEmail']=''
 			self.pluginPrefs['updaterEmailsEnabled']='false'
 
-		except:
+		except Exception as e:
 			if self.pluginPrefs.get('checkBoxDebug',False):
-				self.errorLog(u"Update checker error.")
+				self.errorLog(f"Update checker error: {e}")
 
 		for dev in indigo.devices.itervalues("self"):
 			# Now check states
@@ -1029,9 +1029,9 @@ class Plugin(indigo.PluginBase):
 				self.pluginPrefs['updaterEmailsEnabled']='false'
 				self.updater.checkVersionPoll()
 
-			except:
+			except Exception as e:
 				if self.pluginPrefs.get('checkBoxDebug',False):
-					self.errorLog(u"Update checker error.")
+					self.errorLog(f"Update checker error: {e}")
 
 			# Reset the log?
 			if logTimeNextReset<time.time():
@@ -1123,9 +1123,9 @@ class Plugin(indigo.PluginBase):
 
 		try:
 			stations = open(stationCodesFile,"r")
-		except:
+		except (IOError, OSError) as e:
 			# Couldn't find stations file - advise user and exit
-			indigo.server.log('*** Could not open station code file '+stationCodesFile+' ***')
+			indigo.server.log(f"*** Could not open station code file {stationCodesFile}: {e} ***")
 			errorHandler('CRITICAL FAILURE ** Station Code file missing - '+stationCodesFile)
 			sys.exit(1)
 		indigo.debugger()
@@ -1179,9 +1179,9 @@ class Plugin(indigo.PluginBase):
 
 		try:
 			stations = open(stationCodesFile,"r")
-		except:
+		except (IOError, OSError) as e:
 			# Couldn't find stations file - advise user and exit
-			indigo.server.log('*** Could not open station code file '+stationCodesFile+' ***')
+			indigo.server.log(f"*** Could not open station code file {stationCodesFile}: {e} ***")
 			errorHandler('CRITICAL FAILURE ** Station Code file missing - '+stationCodesFile)
 			sys.exit(1)
 
@@ -1237,8 +1237,8 @@ def text2png(imageFileName, trainTextFile, parametersFileName, departuresAvailab
 	# Import the graphic conversion files
 	try:
 		import PIL
-	except:
-		print('** PILLOW or PIL must be installed - please see forum for details')
+	except ImportError as e:
+		print(f"** PILLOW or PIL must be installed: {e} - please see forum for details")
 		sys.exit(21)
 
 	# Now get the key modules we're using on this occasion
@@ -1282,8 +1282,8 @@ def text2png(imageFileName, trainTextFile, parametersFileName, departuresAvailab
 
 	try:
 		routeInfo = open(trainTextFile, 'r')
-	except:
-		print('Something wrong with the text file!' + trainTextFile)
+	except (IOError, OSError) as e:
+		print(f"Something wrong with the text file {trainTextFile}: {e}")
 		print(sys.exit(22))
 
 	stationTitles = routeInfo.readline()

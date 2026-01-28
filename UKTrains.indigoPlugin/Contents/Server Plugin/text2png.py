@@ -14,8 +14,8 @@ import os, sys
 # Import the graphic conversion files
 try:
     import PIL
-except:
-    print ('** PILLOW or PIL  must be installed')
+except ImportError as e:
+    print(f"** PILLOW or PIL must be installed: {e}")
     sys.exit(21)
 
 # Now get the key modules we're using on this occasion
@@ -74,8 +74,8 @@ width = int(parameterSplit[8])
 
 try:
     routeInfo = open(trainTextFile, 'r')
-except:
-    print('Something wrong with the text file!'+trainTextFile)
+except (IOError, OSError) as e:
+    print(f"Something wrong with the text file {trainTextFile}: {e}")
     print(sys.exit(22))
 
 stationTitles = routeInfo.readline()
