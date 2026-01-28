@@ -186,6 +186,40 @@ def mock_plugin_prefs():
 
 
 @pytest.fixture
+def mock_plugin_paths(tmp_path):
+    """
+    Fixture providing mock PluginPaths object for testing.
+    """
+    # Import PluginPaths dataclass
+    import plugin
+    from dataclasses import dataclass
+
+    # Create real paths
+    plugin_root = tmp_path / "plugin"
+    fonts_dir = tmp_path / "fonts"
+    station_codes_file = tmp_path / "stationCodes.txt"
+    image_output_dir = tmp_path / "images"
+    log_dir = tmp_path / "logs"
+
+    # Create directories
+    plugin_root.mkdir(parents=True, exist_ok=True)
+    fonts_dir.mkdir(parents=True, exist_ok=True)
+    image_output_dir.mkdir(parents=True, exist_ok=True)
+    log_dir.mkdir(parents=True, exist_ok=True)
+
+    # Create the PluginPaths object directly
+    paths = plugin.PluginPaths(
+        plugin_root=plugin_root,
+        fonts_dir=fonts_dir,
+        station_codes_file=station_codes_file,
+        image_output_dir=image_output_dir,
+        log_dir=log_dir
+    )
+
+    return paths
+
+
+@pytest.fixture
 def captured_logs(caplog):
     """
     Fixture that captures log output for assertions.

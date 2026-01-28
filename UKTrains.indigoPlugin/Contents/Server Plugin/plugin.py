@@ -1356,7 +1356,7 @@ class Plugin(indigo.PluginBase):
 
 	def validatePrefsConfigUi(self, devProps):
 
-		if self.config.debug:
+		if hasattr(self, 'config') and self.config.debug:
 			self.plugin_logger.debug('Validating Config file...')
 
 		errorDict = indigo.Dict()
@@ -1396,7 +1396,7 @@ class Plugin(indigo.PluginBase):
 				# Validate path using pathlib
 				try:
 					image_path = Path(devProps['imageFilename'])
-					if self.config.debug:
+					if hasattr(self, 'config') and self.config.debug:
 						self.plugin_logger.debug(f'Validating image path: {image_path}')
 
 					# Ensure directory exists or can be created
