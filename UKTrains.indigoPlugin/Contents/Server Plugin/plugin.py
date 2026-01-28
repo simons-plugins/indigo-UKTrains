@@ -28,7 +28,7 @@
 ###############################################################################################
 
 # Get system modules
-import os, sys, time, datetime,traceback
+import os, sys, time, datetime, traceback, re
 import subprocess
 from subprocess import call
 from dataclasses import dataclass
@@ -133,188 +133,9 @@ class PluginLogger:
 		self.logger.setLevel(level)
 
 
-# ========== Plugin Configuration Class ==========
-
-@dataclass
-class PluginConfig:
-	"""Centralized plugin configuration to replace global variables."""
-	debug: bool
-	plugin_path: Path
-	station_dict: Dict[str, str]
-	error_log_path: Path
-	pytz_available: bool
-
-
-@dataclass
-class PluginPaths:
-	"""Centralized path management for UK-Trains plugin"""
-
-	plugin_root: Path
-	fonts_dir: Path
-	station_codes_file: Path
-	image_output_dir: Path
-	log_dir: Path
-
-	@classmethod
-	def initialize(cls, plugin_path: str, user_image_path: Optional[str] = None) -> 'PluginPaths':
-		"""
-		Initialize plugin paths with validation.
-
-		Args:
-			plugin_path: Root path of plugin bundle
-			user_image_path: User-configured image output directory
-
-		Returns:
-			Initialized PluginPaths object
-		"""
-		root = Path(plugin_path)
-
-		# Standard plugin directories
-		fonts = root / 'BoardFonts' / 'MFonts'
-		station_codes = root / constants.STATION_CODES_FILE
-
-		# User-configurable image output
-		if user_image_path:
-			image_output = Path(user_image_path)
-		else:
-			image_output = Path.home() / 'Documents' / 'IndigoImages'
-
-		# Ensure image output directory exists
-		image_output.mkdir(parents=True, exist_ok=True)
-
-		# Log directory - find the current Indigo version dynamically
-		perceptive_dir = Path.home() / 'Library' / 'Application Support' / 'Perceptive Automation'
-
-		# Look for Indigo folders (e.g., "Indigo 2023.2", "Indigo 2024.1", etc.)
-		indigo_folders = sorted([d for d in perceptive_dir.glob('Indigo *') if d.is_dir()], reverse=True)
-
-		if indigo_folders:
-			# Use the most recent version folder
-			log_dir = indigo_folders[0] / 'Logs'
-		else:
-			# Fallback to generic Indigo folder if version-specific not found
-			log_dir = perceptive_dir / 'Indigo' / 'Logs'
-
-		log_dir.mkdir(parents=True, exist_ok=True)
-
-		return cls(
-			plugin_root=root,
-			fonts_dir=fonts,
-			station_codes_file=station_codes,
-			image_output_dir=image_output,
-			log_dir=log_dir
-		)
-
-	def get_image_path(self, start_crs: str, end_crs: str) -> Path:
-		"""Get path for departure board image"""
-		return self.image_output_dir / f'{start_crs}{end_crs}timetable.png'
-
-	def get_text_path(self, start_crs: str, end_crs: str) -> Path:
-		"""Get path for departure board text file"""
-		return self.image_output_dir / f'{start_crs}{end_crs}departureBoard.txt'
-
-	def get_parameters_file(self) -> Path:
-		"""Get path for image generation parameters"""
-		return self.plugin_root / 'trainparameters.txt'
-
-	def get_output_log(self) -> Path:
-		"""Get path for image generation output log"""
-		return self.plugin_root / constants.IMAGE_OUTPUT_LOG
-
-	def get_error_log(self) -> Path:
-		"""Get path for image generation error log"""
-		return self.plugin_root / constants.IMAGE_ERROR_LOG
-
-
-# ========== Pydantic Configuration Models ==========
-
-if BaseModel is not None:
-	class DarwinAPIConfig(BaseModel):
-		"""Configuration for Darwin API access"""
-		api_key: str = Field(min_length=10, description="Darwin API key")
-		wsdl_url: str = Field(
-			default="https://lite.realtime.nationalrail.co.uk/OpenLDBWS/wsdl.aspx",
-			description="Darwin WSDL endpoint"
-		)
-
-		@field_validator('api_key')
-		@classmethod
-		def validate_api_key(cls, v: str) -> str:
-			if v == 'NO KEY' or v == 'NO KEY ENTERED' or v.strip() == '':
-				raise ValueError('Valid Darwin API key required')
-			if len(v) < 10:
-				raise ValueError('Darwin API key must be at least 10 characters')
-			return v
-
-
-	class UpdateConfig(BaseModel):
-		"""Configuration for update frequency"""
-		frequency_seconds: int = Field(
-			default=60,
-			ge=30,  # Greater than or equal to 30
-			le=600,  # Less than or equal to 600
-			description="Update frequency in seconds"
-		)
-
-
-	class ImageConfig(BaseModel):
-		"""Configuration for image generation"""
-		create_images: bool = Field(default=True, description="Enable image generation")
-		image_path: Optional[str] = Field(default=None, description="Path for generated images")
-		font_path: str = Field(default="/Library/Fonts", description="Path to fonts directory")
-		include_calling_points: bool = Field(default=False, description="Include calling points in display")
-
-		# Color configurations
-		normal_color: str = Field(default="#0F0", description="Normal service foreground color")
-		background_color: str = Field(default="#000", description="Background color")
-		issue_color: str = Field(default="#F00", description="Issue/problem color")
-		calling_points_color: str = Field(default="#FFF", description="Calling points color")
-		title_color: str = Field(default="#0FF", description="Title text color")
-
-		@field_validator('image_path')
-		@classmethod
-		def validate_image_path(cls, v: Optional[str]) -> Optional[str]:
-			if v is not None and v.strip() != '':
-				path = Path(v)
-				if not path.parent.exists() and not path.exists():
-					raise ValueError(f'Directory does not exist: {v}')
-			return v
-
-
-	class PluginConfiguration(BaseModel):
-		"""Complete plugin configuration with validation"""
-		darwin: DarwinAPIConfig
-		update: UpdateConfig
-		image: ImageConfig
-		debug: bool = Field(default=False, description="Enable debug logging")
-
-		@classmethod
-		def from_plugin_prefs(cls, prefs: dict) -> 'PluginConfiguration':
-			"""Create configuration from Indigo plugin preferences"""
-			return cls(
-				darwin=DarwinAPIConfig(
-					api_key=prefs.get('darwinAPI', 'NO KEY'),
-					wsdl_url=prefs.get('darwinSite', 'https://lite.realtime.nationalrail.co.uk/OpenLDBWS/wsdl.aspx')
-				),
-				update=UpdateConfig(
-					frequency_seconds=int(prefs.get('updateFreq', 60))
-				),
-				image=ImageConfig(
-					create_images=prefs.get('createMaps', True) in [True, 'true', 'YES', 'yes'],
-					image_path=prefs.get('imageFilename'),
-					font_path=prefs.get('fontPath', '/Library/Fonts'),
-					include_calling_points=prefs.get('includeCalling', False),
-					normal_color=prefs.get('forcolour', '#0F0'),
-					background_color=prefs.get('bgcolour', '#000'),
-					issue_color=prefs.get('isscolour', '#F00'),
-					calling_points_color=prefs.get('cpcolour', '#FFF'),
-					title_color=prefs.get('ticolour', '#0FF')
-				),
-				debug=prefs.get('checkboxDebug1', False)
-			)
-else:
-	# Pydantic not available - define placeholder
-	PluginConfiguration = None
+# ========== Configuration Classes (extracted to config.py) ==========
+# Import configuration classes from config module
+from config import PluginConfig, PluginPaths, PluginConfiguration, RuntimeConfig
 
 
 # ========== Module-level pytz check (runs at import time) ==========
@@ -362,58 +183,9 @@ def errorHandler(error_msg: str):
 
 # ========== Retry Logic with Exponential Backoff ==========
 
-def _log_retry_attempt(retry_state):
-	"""Callback to log retry attempts for Darwin API calls."""
-	attempt_number = retry_state.attempt_number
-	if attempt_number > 1:
-		# Get logger from plugin instance if available
-		try:
-			if hasattr(sys.modules['__main__'], 'plugin'):
-				plugin = sys.modules['__main__'].plugin
-				if hasattr(plugin, 'plugin_logger'):
-					plugin.plugin_logger.warning(
-						f"API call failed (attempt {attempt_number}), retrying in "
-						f"{retry_state.next_action.sleep} seconds..."
-					)
-					return
-		except Exception:
-			pass
-		# Fallback to print if logger not available
-		print(f"WARNING: API call failed (attempt {attempt_number}), retrying...", file=sys.stderr)
-
-
-def darwin_api_retry(max_attempts: int = 3):
-	"""
-	Decorator for Darwin API calls with exponential backoff.
-
-	Retries on SOAP/network failures with exponential backoff:
-	- Wait 1s, then 2s, then 4s between retries
-	- Max 3 attempts by default
-	- Only retries on transient errors (network, SOAP faults)
-
-	Args:
-		max_attempts: Maximum number of retry attempts (default: 3)
-
-	Returns:
-		Retry decorator if tenacity is available, otherwise identity function
-	"""
-	# Check if tenacity is available
-	if retry is None:
-		# Tenacity not available, return identity decorator
-		def identity_decorator(func):
-			return func
-		return identity_decorator
-
-	# Import suds here to avoid circular dependency
-	import suds
-
-	return retry(
-		stop=stop_after_attempt(max_attempts),
-		wait=wait_exponential(multiplier=1, min=1, max=10),
-		retry=retry_if_exception_type((suds.WebFault, ConnectionError, TimeoutError)),
-		before_sleep=_log_retry_attempt,
-		reraise=True
-	)
+# ========== Darwin API Functions (extracted to darwin_api.py) ==========
+# Import Darwin API wrapper functions and retry decorator
+from darwin_api import darwin_api_retry, _fetch_station_board, _fetch_service_details, nationalRailLogin
 
 
 # Get darwin access modules and other standard dependencies in place
@@ -425,9 +197,9 @@ except ImportError as e:
 	sys.exit(3)
 
 try:
-	import suds
+	from zeep.exceptions import Fault as WebFault
 except ImportError as e:
-	indigo.server.log(f"** Couldn't find suds module: {e} - check forums for install process for your system **", level=logging.CRITICAL)
+	indigo.server.log(f"** Couldn't find zeep module: {e} - check forums for install process for your system **", level=logging.CRITICAL)
 	sys.exit(4)
 
 try:
@@ -457,652 +229,53 @@ except ImportError as e:
 	_MODULE_FAILPYTZ = True
 	pass
 
-def getUKTime() -> str:
-	"""Get current UK time formatted as string.
+# ========== Text Formatting Functions (extracted to text_formatter.py) ==========
+# Import text formatting utilities
+from text_formatter import getUKTime, delayCalc, formatSpecials
 
-	Returns:
-		Formatted time string with timezone indicator (e.g., "Mon 14:30:45 UK Time")
-	"""
-	### Checks time generated to allow for BST
-	### Note - all times are UK Time
-	### Get the current time in London as a basis
 
-	if _MODULE_FAILPYTZ:
-		# Module isn't installed so we will return GMT time
-		gmtTime = time.gmtime()
-		return time.strftime('%a %H:%M:%S', gmtTime)+' GMT'
-	else:
-		timeZone = pytz.timezone('Europe/London')
-		lonTime = datetime.datetime.now(timeZone)
-		return lonTime.strftime('%a %H:%M:%S')+' UK Time'
+# ========== Device Management and Image Generation (extracted to modules) ==========
+# Import device state management functions
+from device_manager import (
+	_clear_device_states,
+	_update_station_issues_flag,
+	_process_special_messages,
+	_build_calling_points_string,
+	_update_train_device_states,
+	_process_train_services
+)
 
-def delayCalc(scheduled_time: str, estimated_time: str) -> Tuple[bool, str]:
-	"""Calculate delay between scheduled and estimated times.
+# Import image generation functions
+from image_generator import (
+	_write_departure_board_text,
+	_generate_departure_image,
+	_append_train_to_image,
+	_format_station_board
+)
 
-	Args:
-		scheduled_time: Scheduled time string (HH:MM format or status)
-		estimated_time: Estimated time string (HH:MM format or status like "On time")
 
-	Returns:
-		Tuple of (has_problem: bool, message: str)
+# _fetch_station_board moved to darwin_api.py
 
-	Note:
-		If estimated_time > scheduled_time: train is late
-		If estimated_time < scheduled_time: train is early
-	"""
-	# Calculates time different between two times of the form HH:MM or handles On Time, Cancelled or Delayed message
-	delayMessage = ''
-	trainProblem = False
 
-	# Check if times are valid HH:MM format or special status strings
-	if not scheduled_time or not estimated_time or scheduled_time[0] not in '012' or estimated_time[0] not in '012':
-		# Handle null/None values safely
-		if scheduled_time and 'On' in scheduled_time or estimated_time and 'On' in estimated_time:
-			delayMessage = 'On time'
-			trainProblem = False
-		elif scheduled_time and 'CAN' in scheduled_time.upper() or estimated_time and 'CAN' in estimated_time.upper():
-			delayMessage = 'Cancelled'
-			trainProblem = True
-		else:
-			delayMessage = 'Delayed'
-			trainProblem = True
-	else:
-		# It's a time so calculate the delay
-		# Convert both to minutes
-		hs, ms = [int(i) for i in scheduled_time.split(':')]
-		timeValScheduled = hs * 60 + ms
-		he, me = [int(i) for i in estimated_time.split(':')]
-		timeValEstimated = he * 60 + me
+# _process_special_messages moved to device_manager.py
 
-		# Check difference: positive means late, negative means early
-		delay_minutes = timeValEstimated - timeValScheduled
 
-		if delay_minutes < 0:
-			# Train is early (estimated < scheduled)
-			if abs(delay_minutes) == 1:
-				delayMessage = '1 min early'
-			else:
-				delayMessage = f'{abs(delay_minutes)} mins early'
-			trainProblem = True
+# _fetch_service_details moved to darwin_api.py
 
-		elif delay_minutes > 0:
-			# Train is late (estimated > scheduled)
-			if delay_minutes == 1:
-				delayMessage = '1 min late'
-			else:
-				delayMessage = f'{delay_minutes} mins late'
-			trainProblem = True
-		else:
-			# On time (estimated == scheduled)
-			delayMessage = 'On Time'
-			trainProblem = False
 
-	return trainProblem, delayMessage
+# _build_calling_points_string moved to device_manager.py
 
-def formatSpecials(longMessage: str) -> str:
-	"""Format long special messages into readable format.
 
-	Removes HTML tags, limits line length, and wraps to maximum 2 lines.
+# _update_train_device_states moved to device_manager.py
 
-	Args:
-		longMessage: Raw message string (may contain HTML)
 
-	Returns:
-		Formatted message string with line breaks
-	"""
-	# Formats long messages into a readable format.  Maximum will be two lines in small font
+# _append_train_to_image moved to image_generator.py
 
-	# Is the message blank?
-	if len(longMessage.strip()) == 0:
-		# Just return the message untouched
-		return longMessage
 
-	# Maximum line length
-	maxLength = 130
-	maxLines = 2
+# _process_train_services moved to device_manager.py
 
-	# Remove the non breaking spaces
-	nonBreakingSpace = '&nbsp'
-	longMessage = longMessage.replace(nonBreakingSpace,' ')
-	longMessage = longMessage.replace('\n','')
 
-	# Look at a more generic way to do this
-	longMessage = longMessage.replace('<P>','')
-	longMessage = longMessage.replace('</P>','')
-	longMessage = longMessage.replace('<A>','')
-	longMessage = longMessage.replace('</A>','')
-	longMessage = longMessage.replace('href=','')
-	longMessage = longMessage.replace('http','')
-	longMessage = longMessage.replace('://','www.')
-	longMessage = longMessage.replace('"','')
-	longMessage = longMessage.replace('Travel News.','')
-	longMessage = longMessage.replace('Latest','')
-	longMessage = longMessage.replace('<A ','')
-	longMessage = longMessage.replace('>','')
-
-	# Now remove the []s
-	longMessage = longMessage.replace('[','')
-	longMessage = longMessage.replace(']','')
-
-	# Ok now break up the message if required
-	returnMessage = ''
-	remaining = True
-	remainingMessage = longMessage
-	totalLines = 0
-
-	while remaining:
-		totalLines += 1
-
-		if len(remainingMessage.strip())>maxLength:
-			# Need to split the messsage more
-			# Find the next space following the maxLength
-			nextPartStart = remainingMessage.find(' ',maxLength)
-			returnMessage += '+++'+remainingMessage[:nextPartStart] + '\n'
-
-			if nextPartStart != -1:
-				# More to process
-				remainingMessage = remainingMessage[nextPartStart+1:]
-			else:
-				remainingMessage = ''
-				remaining = False
-
-			if totalLines == maxLines:
-				# That's all we have room for
-				remaining = False
-				break
-
-		else:
-			returnMessage += '+++'+remainingMessage+'\n'
-
-			# Forget the rest of the message
-			remaining = False
-
-	# Return the multi-line string
-	# Note: Debug logging removed - use plugin instance logger instead
-	return returnMessage
-
-
-# ========== Phase 3 Refactoring: Extracted Helper Functions ==========
-
-def _clear_device_states(dev: Any) -> None:
-	"""Clear all train states on device before update.
-
-	Args:
-		dev: Indigo device object to clear
-	"""
-	# Clear all train data (up to MAX_TRAINS_TRACKED)
-	for trainNum in range(1, constants.MAX_TRAINS_TRACKED + 1):
-		train_prefix = f'train{trainNum}'
-		dev.updateStateOnServer(f'{train_prefix}Dest', value='')
-		dev.updateStateOnServer(f'{train_prefix}Sch', value='')
-		dev.updateStateOnServer(f'{train_prefix}Est', value='')
-		dev.updateStateOnServer(f'{train_prefix}Delay', value='')
-		dev.updateStateOnServer(f'{train_prefix}Issue', value=False)
-		dev.updateStateOnServer(f'{train_prefix}Reason', value='')
-		dev.updateStateOnServer(f'{train_prefix}Calling', value='')
-
-	# Clear station issues flag
-	dev.updateStateOnServer('stationIssues', value=False)
-
-
-def _update_station_issues_flag(dev: Any) -> None:
-	"""Check if any train has issues and update station-level flag.
-
-	Args:
-		dev: Indigo device object to update
-	"""
-	# Check all trains for issues
-	for trainNum in range(1, constants.MAX_TRAINS_TRACKED + 1):
-		train_issue_state = f'train{trainNum}Issue'
-		if dev.states.get(train_issue_state, False):
-			dev.updateStateOnServer('stationIssues', value=True)
-			return
-	# If we get here, no issues found
-	dev.updateStateOnServer('stationIssues', value=False)
-
-
-def _write_departure_board_text(
-	text_path: Path,
-	station_start: str,
-	station_end: str,
-	titles: str,
-	statistics: str,
-	messages: str,
-	board_content: str
-) -> None:
-	"""Write formatted departure board to text file.
-
-	Args:
-		text_path: Full path to output text file (Path object)
-		station_start: Starting station CRS code
-		station_end: Destination station CRS code
-		titles: Column titles string
-		statistics: Statistics/timestamp string
-		messages: Special NRCC messages (may be empty)
-		board_content: Main board content with train listings
-	"""
-	with open(text_path, 'w') as f:
-		f.write(f"{station_start} to {station_end}\n")
-		f.write(titles)
-		f.write(statistics)
-		if messages:
-			f.write(messages)
-		f.write(board_content)
-
-
-def _generate_departure_image(
-	plugin_root: Path,
-	image_filename: Path,
-	text_filename: Path,
-	parameters_filename: Path,
-	departures_available: bool
-) -> subprocess.CompletedProcess:
-	"""Launch subprocess to generate PNG image from text file.
-
-	Args:
-		plugin_root: Path to plugin root directory (Path object)
-		image_filename: Path where PNG will be saved (Path object)
-		text_filename: Path to input text file (Path object)
-		parameters_filename: Path to parameters configuration file (Path object)
-		departures_available: Boolean indicating if departures exist
-
-	Returns:
-		subprocess.CompletedProcess result
-	"""
-	dep_flag = 'YES' if departures_available else 'NO'
-
-	# Use Path objects for subprocess files
-	output_log = plugin_root / constants.IMAGE_OUTPUT_LOG
-	error_log = plugin_root / constants.IMAGE_ERROR_LOG
-
-	with open(output_log, 'w') as output_file, \
-	     open(error_log, 'w') as error_file:
-		result = subprocess.run(
-			[constants.PYTHON3_PATH,
-			 str(plugin_root / 'text2png.py'),
-			 str(image_filename),
-			 str(text_filename),
-			 str(parameters_filename),
-			 dep_flag],
-			stdout=output_file,
-			stderr=error_file
-		)
-	return result
-
-
-# ========== End of Phase 3 Helper Functions ==========
-
-
-@darwin_api_retry(max_attempts=3)
-def _fetch_station_board(
-	session: Any,
-	start_crs: str,
-	end_crs: Optional[str] = None,
-	row_limit: int = 100
-) -> Any:
-	"""Fetch station board with optional destination filter.
-	Retries up to 3 times with exponential backoff on API failures.
-
-	Args:
-		session: DarwinLdbSession object for API access
-		start_crs: Starting station CRS code
-		end_crs: Optional destination CRS code (None or 'ALL' for all destinations)
-		row_limit: Maximum number of services to request
-
-	Returns:
-		StationBoard object from Darwin API
-
-	Raises:
-		suds.WebFault: If SOAP request fails after all retries
-		Exception: For other API errors after all retries
-	"""
-	if end_crs and end_crs != constants.ALL_DESTINATIONS_CRS:
-		# Filtered by destination
-		board = session.get_station_board(
-			start_crs,
-			row_limit,
-			True,   # include_departures
-			False,  # include_arrivals
-			end_crs
-		)
-	else:
-		# All destinations
-		board = session.get_station_board(
-			start_crs,
-			row_limit,
-			True,   # include_departures
-			False   # include_arrivals
-		)
-	return board
-
-
-def _process_special_messages(board: Any, dev: Any, testing_mode: bool = False) -> str:
-	"""Extract and format NRCC special messages from station board.
-
-	Args:
-		board: StationBoard object from Darwin API
-		dev: Indigo device object to update with messages
-		testing_mode: Boolean flag for testing (default: False)
-
-	Returns:
-		Formatted special messages string (empty if no messages)
-	"""
-	# Check if there are messages to process
-	has_messages = (hasattr(board, 'nrcc_messages') and
-	                len(board.nrcc_messages) > 0)
-
-	if not has_messages and not testing_mode:
-		return ''
-
-	if testing_mode:
-		# Test message for BETA
-		special_messages = ('This is a test message that would span a lot of lines in the display.  '
-		                   'We need to format it correctly and remove any special characters&nbspBecause '
-		                   'it is so long it will take a lot of lines on the display and this should be managed'
-		                   ' through the maxLines element')
-	else:
-		# Extract real messages from board
-		special_messages = str(board.nrcc_messages)
-
-	# Format the messages (removes HTML, wraps lines, etc.)
-	formatted_messages = formatSpecials(special_messages)
-
-	# Update device state with cleaned messages
-	dev.updateStateOnServer('stationMessages', value=formatted_messages.replace('+', ''))
-
-	return formatted_messages
-
-
-@darwin_api_retry(max_attempts=2)
-def _fetch_service_details(session: Any, service_id: str) -> Optional[Any]:
-	"""Fetch detailed service information from Darwin API.
-	Retries up to 2 times with exponential backoff on API failures.
-
-	Args:
-		session: DarwinLdbSession object for API access
-		service_id: Unique service identifier
-
-	Returns:
-		ServiceDetails object or None if fetch failed after all retries
-	"""
-	try:
-		service = session.get_service_details(service_id)
-		return service
-	except (suds.WebFault, ConnectionError, TimeoutError) as e:
-		# Log the error but return None to allow other services to process
-		errorHandler(f'Service details fetch failed after retries: {e}')
-		return None
-	except Exception as e:
-		errorHandler(f'Unexpected error fetching service details: {e}')
-		return None
-
-
-def _build_calling_points_string(service: Any) -> str:
-	"""Extract calling points from service and format as string.
-
-	Args:
-		service: ServiceDetails object from Darwin API
-
-	Returns:
-		Formatted calling points string (e.g., "Reading(10:15) Oxford(10:45)")
-	"""
-	try:
-		# Check if subsequent_calling_points exists and is not None
-		calling_points_list = getattr(service, 'subsequent_calling_points', [])
-		if calling_points_list is None:
-			calling_points_list = []
-
-		calling_points = [cp.location_name for cp in calling_points_list]
-		arrival_times = [arrival.st for arrival in calling_points_list]
-		estimated_times = [arrival.et for arrival in calling_points_list]
-	except AttributeError as e:
-		errorHandler(f'WARNING ** SOAP failed on Calling Points access: {e} - try again later **')
-		return ''
-
-	cp_string = ''
-	for cp_index, cpoint in enumerate(calling_points):
-		try:
-			if 'On' in estimated_times[cp_index]:
-				cp_string += cpoint + '(' + arrival_times[cp_index] + ') '
-			else:
-				cp_string += cpoint + '(' + estimated_times[cp_index] + ') '
-		except (AttributeError, IndexError):
-			errorHandler('WARNING - Estimated Time for calling point returned NULL - not critical')
-		except Exception as e:
-			errorHandler(f'WARNING - Estimated Time for calling point - unknown error: {e} - advise developer')
-
-	# Remove redundant "On time" text
-	cp_string = cp_string.replace('On time', '')
-
-	return cp_string
-
-
-def _update_train_device_states(
-	dev: Any,
-	train_num: int,
-	destination: Any,
-	service: Optional[Any],
-	include_calling_points: bool
-) -> None:
-	"""Update all device states for a single train.
-
-	Args:
-		dev: Indigo device object
-		train_num: Train number (1-10)
-		destination: ServiceItem from station board
-		service: ServiceDetails from API
-		include_calling_points: Boolean for whether to include calling points
-	"""
-	# Build state key prefixes
-	train_prefix = f'train{train_num}'
-
-	# Extract service data with null safety
-	dest_text = getattr(destination, 'destination_text', 'Unknown')
-	dest_std = getattr(destination, 'std', '00:00')
-	dest_etd = getattr(destination, 'etd', '00:00')
-	dest_operator = getattr(destination, 'operator_name', 'Unknown')
-
-	# Update basic states
-	dev.updateStateOnServer(f'{train_prefix}Dest', value=dest_text)
-	dev.updateStateOnServer(f'{train_prefix}Op', value=dest_operator)
-	dev.updateStateOnServer(f'{train_prefix}Sch', value=dest_std)
-	dev.updateStateOnServer(f'{train_prefix}Est', value=dest_etd)
-
-	# Calculate and update delay
-	has_problem, delay_msg = delayCalc(dest_std, dest_etd)
-	dev.updateStateOnServer(f'{train_prefix}Delay', value=delay_msg)
-	dev.updateStateOnServer(f'{train_prefix}Issue', value=has_problem)
-
-	# Update reason
-	if 'On Time' in delay_msg:
-		dev.updateStateOnServer(f'{train_prefix}Reason', value='')
-	else:
-		dev.updateStateOnServer(f'{train_prefix}Reason', value='No reason provided')
-
-	# Process calling points if requested
-	if include_calling_points and service:
-		calling_points_str = _build_calling_points_string(service)
-		dev.updateStateOnServer(f'{train_prefix}Calling', value=calling_points_str)
-
-
-def _append_train_to_image(
-	image_content: List[str],
-	destination: Any,
-	include_calling_points: bool,
-	service: Optional[Any],
-	word_length: int = 80
-) -> None:
-	"""Add train service data to image content array.
-
-	Args:
-		image_content: List to append formatted content to
-		destination: ServiceItem from station board
-		include_calling_points: Boolean for whether to include calling points
-		service: ServiceDetails from API (may be None)
-		word_length: Maximum line length for wrapping
-	"""
-	# Extract destination data
-	dest_text = getattr(destination, 'destination_text', 'Unknown')
-	dest_std = getattr(destination, 'std', '00:00')
-	dest_etd = getattr(destination, 'etd', '00:00')
-	operator_code = getattr(destination, 'operator_code', 'Unknown')
-	operator_name = getattr(destination, 'operator_name', 'Unknown')
-
-	# Calculate delay for display
-	has_problem, delay_msg = delayCalc(dest_std, dest_etd)
-
-	# Format main service line
-	if len(delay_msg.strip()) == 0:
-		destination_content = f"\n{dest_text},{dest_std},{dest_etd},{operator_code}\n"
-		image_content.append(destination_content)
-	else:
-		destination_content = f"\n{dest_text},{dest_std},{dest_etd},{operator_name}"
-		image_content.append(destination_content)
-		delay_message = f'Status:{delay_msg}\n'
-		image_content.append(delay_message)
-
-	# Add calling points if requested
-	if include_calling_points and service:
-		cp_string = _build_calling_points_string(service)
-		if len(cp_string) > 0:
-			# Split long calling points into multiple lines
-			if len(cp_string) <= word_length:
-				# No need to split
-				image_content.append('>>> ' + cp_string)
-			else:
-				# Split at word boundaries
-				remaining = cp_string
-				while len(remaining) > word_length:
-					cut_point = remaining.find(')', word_length - 1)
-					if cut_point != -1:
-						image_content.append('>>> ' + remaining[:cut_point + 1])
-						remaining = remaining[cut_point + 1:].lstrip()
-					else:
-						# No closing paren found, just break
-						break
-
-				# Add remaining text
-				if len(remaining.strip()) != 0:
-					image_content.append('>>> ' + remaining)
-
-
-def _process_train_services(
-	dev: Any,
-	session: Any,
-	board: Any,
-	image_content: List[str],
-	include_calling_points: bool,
-	word_length: int = 80
-) -> bool:
-	"""Process all train services from station board.
-
-	Main loop coordinator that fetches service details, updates device states,
-	and builds image content for each train.
-
-	Args:
-		dev: Indigo device object
-		session: DarwinLdbSession for API calls
-		board: StationBoard object
-		image_content: List to append formatted train data to
-		include_calling_points: Boolean for whether to include calling points
-		word_length: Maximum line length for image formatting
-
-	Returns:
-		Boolean indicating if any departures were found
-	"""
-
-	departures_found = False
-	services = getattr(board, 'train_services', [])
-
-	# Debug logging removed - use plugin instance logger instead
-
-	for train_num, destination in enumerate(services[:constants.MAX_TRAINS_TRACKED], start=1):
-		# Debug logging removed - use plugin instance logger instead
-
-		# Fetch full service details from Darwin API
-		service = _fetch_service_details(session, destination.service_id)
-		if service is None:
-			# API call failed, skip this service but continue with others
-			continue
-
-		# Successfully fetched at least one service
-		departures_found = True
-
-		# Update device states for this train
-		_update_train_device_states(dev, train_num, destination, service, include_calling_points)
-
-		# Build image content for this train
-		_append_train_to_image(image_content, destination, include_calling_points, service, word_length)
-
-	return departures_found
-
-
-def _format_station_board(
-	image_content: List[str],
-	departures_found: bool,
-	via_station: str,
-	board: Any,
-	base_via: str,
-	max_lines: int = 30
-) -> str:
-	"""Format image content array into final departure board display.
-
-	Args:
-		image_content: List of strings containing board data
-		departures_found: Boolean indicating if any departures exist
-		via_station: Display string for destination filter (e.g., "(via: London)")
-		board: StationBoard object for station name
-		base_via: Base destination name without formatting
-		max_lines: Maximum number of lines to include in board
-
-	Returns:
-		Formatted station board string
-	"""
-	if not departures_found:
-		# No trains found - generate appropriate message
-		if len(via_station) != 0:
-			return ("** No departures found from " + board.location_name + " direct to " + base_via +
-			        " today **\n** Check Operators website for more information on current schedule and issues **")
-		else:
-			return ("** No departures found from " + board.location_name +
-			        " today **\n** Check Operators website for more information on current schedule and issues **")
-
-	# Format the departure board from image content
-	station_board = ''
-	tot_lines = 0
-
-	for line_index in range(len(image_content)):
-		current_line = image_content[line_index]
-
-		if 'Status' in current_line:
-			# Status/delay line - keep as is
-			board_line = current_line
-
-		elif '>>>' not in current_line:
-			# Regular destination line - parse and format columns
-			parts = current_line.split(',')
-			if len(parts) >= 4:
-				destination = parts[0] + '-' * 50
-				schedule = parts[1] + '-' * 10
-				estimated = parts[2] + '-' * 10
-				operator = parts[3]
-				board_line = destination[:35] + ' ' + schedule[:10] + estimated[:10] + operator
-			else:
-				# Malformed line, keep as is
-				board_line = current_line
-
-		else:
-			# Calling points line (contains '>>>')
-			board_line = current_line
-
-		station_board = station_board + board_line + '\n'
-
-		# Check line limit
-		tot_lines += 1
-		if tot_lines > max_lines:
-			break
-
-	return station_board
+# _format_station_board moved to image_generator.py
 
 
 def routeUpdate(dev, apiAccess, networkrailURL, paths):
@@ -1142,7 +315,7 @@ def routeUpdate(dev, apiAccess, networkrailURL, paths):
 	# Fetch station board with optional destination filter
 	try:
 		stationBoardDetails = _fetch_station_board(darwinSession, stationStartCrs, stationEndCrs)
-	except (suds.WebFault, Exception) as e:
+	except (WebFault, Exception) as e:
 		errorHandler(f'WARNING ** SOAP resolution failed: {e} - will retry later when server less busy **')
 		return False
 
@@ -1214,42 +387,7 @@ def routeUpdate(dev, apiAccess, networkrailURL, paths):
 
 	return True
 
-@darwin_api_retry(max_attempts=2)
-def nationalRailLogin(wsdl = 'https://lite.realtime.nationalrail.co.uk/OpenLDBWS/wsdl.aspx',api_key='NO KEY'):
-	"""Login to National Rail Darwin service.
-	Retries up to 2 times on connection failures.
-
-	Args:
-		wsdl: Darwin WSDL URL
-		api_key: Darwin API key
-
-	Returns:
-		Tuple of (success: bool, session: DarwinLdbSession or None)
-	"""
-	if 'realtime.nationalrail' not in wsdl:
-		# Darwin address is invalid
-		# print error message and return
-		# Debug logging removed - use plugin instance logger instead
-
-		errorHandler('CRITICAL FAILURE ** Darwin is invalid - please check or advise developer - '+wsdl+' **')
-
-		return False, None
-
-	# We have a site and a key now try to use it:
-	try:
-		darwin_sesh = DarwinLdbSession(wsdl, api_key)
-		# Login successful
-		# Debug logging removed - use plugin instance logger instead
-
-		return True, darwin_sesh
-
-	except Exception as e:
-		# Login failed. As the user to check details and try again
-		# Debug logging removed - use plugin instance logger instead
-
-		errorHandler(f'WARNING ** Failed to log in to Darwin: {e} - check API key and internet connection')
-
-		return False, None
+# nationalRailLogin moved to darwin_api.py
 
 ################################################################################
 class Plugin(indigo.PluginBase):
@@ -1596,7 +734,7 @@ class Plugin(indigo.PluginBase):
 			if self.pluginPrefs.get('checkBoxDebug',False):
 				self.errorLog(f"Update checker error: {e}")
 
-		for dev in indigo.devices.itervalues("self"):
+		for dev in indigo.devices.iter("self"):
 			# Now check states
 			dev.stateListOrDisplayStateIdChanged()
 
@@ -1615,30 +753,21 @@ class Plugin(indigo.PluginBase):
 		logTimeNextReset = time.time()+int(3600)
 		indigo.debugger()
 		while True:
-			# Get configuration
-			apiKey = self.pluginPrefs.get('darwinAPI', 'NO KEY')
-			darwinURL = self.pluginPrefs.get('darwinSite', 'No URL')
-			stationImage = self.pluginPrefs.get('createMaps', "true")
-			refreshFreq = int(self.pluginPrefs.get('updateFreq','60'))
+			# Load configuration once per loop using RuntimeConfig
+			runtime_config = RuntimeConfig.from_plugin_prefs(self.pluginPrefs)
 			self.config.debug = self.pluginPrefs.get('checkboxDebug1', False)
-
-			# Get colours for display or defaults
-			forcolour = self.pluginPrefs.get('forcolour', '#0F0')
-			bgcolour = self.pluginPrefs.get('bgcolour', '#000')
-			isscolour = self.pluginPrefs.get('isscolour', '#F00')
-			cpcolour = self.pluginPrefs.get('cpcolour', '#FFF')
-			ticolour = self.pluginPrefs.get('ticolour', '#0FF')
 
 			# Update image path if it changed in preferences
 			user_image_path = self.pluginPrefs.get('imageFilename')
-			if user_image_path and stationImage:
+			if user_image_path and runtime_config.create_images:
 				# User changed image path, reinitialize paths
 				self.paths = PluginPaths.initialize(_MODULE_PYPATH.rstrip('/'), user_image_path)
 
-			# Create parameters file using pathlib
+			# Create parameters file using ColorScheme
 			parameters_file = self.paths.get_parameters_file()
+			colors = runtime_config.color_scheme
 			with open(parameters_file, 'w') as f:
-				f.write(f'{forcolour},{bgcolour},{isscolour},{ticolour},{cpcolour},9,3,3,720')
+				f.write(f'{colors.foreground},{colors.background},{colors.issue},{colors.title},{colors.calling_points},9,3,3,720')
 
 			# Note: Update checker functionality removed - self.updater was never initialized
 			# If update checking is needed in the future, initialize self.updater in __init__
@@ -1672,7 +801,7 @@ class Plugin(indigo.PluginBase):
 					dev.updateStateOnServer('destinationCRS',value = dev.pluginProps['destinationCode'])
 
 					# Update the device with the latest information
-					deviceRefresh = routeUpdate(dev, apiKey, darwinURL, self.paths)
+					deviceRefresh = routeUpdate(dev, runtime_config.api_key, runtime_config.darwin_url, self.paths)
 
 					if not deviceRefresh:
 						# Update failed - probably due to SOAP server timeout
@@ -1698,7 +827,7 @@ class Plugin(indigo.PluginBase):
 					dev.updateStateImageOnServer(indigo.kStateImageSel.SensorOff)
 					dev.updateStateOnServer('deviceStatus', value = 'Not active')
 
-			self.sleep(refreshFreq)
+			self.sleep(runtime_config.refresh_freq)
 
 		# Broken out of TRUE loop so shutdown
 		self.shutdown()
@@ -1733,16 +862,11 @@ class Plugin(indigo.PluginBase):
 			with open(station_codes_file, "r") as stations:
 				# Extract the data to dictionary
 				# Data format is CRS,Station Name (csv)
-				local_station_dict = {}
-				stationList = []
-				for line in stations:
-					stationDetails = line
-					stationCRS = stationDetails[:3]
-					stationName = stationDetails[4:].replace('\r\n','')
-
-					# Add to dictionary
-					local_station_dict[stationName]=stationName
-					stationList.append(stationName)
+				lines = stations.readlines()
+				# Build station list using comprehension
+				stationList = [line[4:].replace('\r\n', '') for line in lines]
+				# Build dictionary for lookup (maps name to name for consistency)
+				local_station_dict = {line[4:].replace('\r\n', ''): line[4:].replace('\r\n', '') for line in lines}
 		except (IOError, OSError) as e:
 			# Couldn't find stations file - advise user and exit
 			self.plugin_logger.error(f"*** Could not open station code file {station_codes_file}: {e} ***")
@@ -1770,8 +894,6 @@ class Plugin(indigo.PluginBase):
 	def createStationDict(self):
 
 		# Refresh the station codes from file
-		localStationDict = {}
-
 		# Open the station codes file using pathlib
 		station_codes_file = self.paths.station_codes_file
 
@@ -1779,13 +901,11 @@ class Plugin(indigo.PluginBase):
 			with open(station_codes_file, "r") as stations:
 				# Extract the data to dictionary
 				# Data format is CRS,Station Name (csv)
-				for line in stations:
-					stationDetails = line
-					stationCRS = stationDetails[:3]
-					stationName = stationDetails[4:].replace('\r\n','')
-
-					# Add to dictionary
-					localStationDict[stationName]=stationCRS
+				# Build dictionary using comprehension: {station_name: CRS_code}
+				localStationDict = {
+					line[4:].replace('\r\n', ''): line[:3]
+					for line in stations
+				}
 		except (IOError, OSError) as e:
 			# Couldn't find stations file - advise user and exit
 			self.plugin_logger.error(f"*** Could not open station code file {station_codes_file}: {e} ***")
@@ -1895,13 +1015,13 @@ def text2png(imageFileName, trainTextFile, parametersFileName, departuresAvailab
 	fontCallingPoints = pypath + 'BoardFonts/MFonts/Hack-RegularOblique.ttf'  # Italic
 
 	# Get the font for the image.  Must be a mono-spaced font for accuracy
-	font = ImageFont.load_default() if fontFullPath == None else ImageFont.truetype(fontFullPath, fontsize + 4)
-	titleFont = ImageFont.load_default() if fontFullPathTitle == None else ImageFont.truetype(fontFullPathTitle, fontsize + 12)
-	statusFont = ImageFont.load_default() if fontFullPath == None else ImageFont.truetype(fontFullPath, fontsize + 5)
-	departFont = ImageFont.load_default() if fontFullPathTitle == None else ImageFont.truetype(fontFullPath, fontsize + 8)
-	delayFont = ImageFont.load_default() if fontFullPath == None else ImageFont.truetype(fontFullPath, fontsize + 4)
-	callingFont = ImageFont.load_default() if fontFullPath == None else ImageFont.truetype(fontCallingPoints, fontsize + 2)
-	messagesFont = ImageFont.load_default() if fontFullPath == None else ImageFont.truetype(fontCallingPoints, fontsize)
+	font = ImageFont.load_default() if fontFullPath is None else ImageFont.truetype(fontFullPath, fontsize + 4)
+	titleFont = ImageFont.load_default() if fontFullPathTitle is None else ImageFont.truetype(fontFullPathTitle, fontsize + 12)
+	statusFont = ImageFont.load_default() if fontFullPath is None else ImageFont.truetype(fontFullPath, fontsize + 5)
+	departFont = ImageFont.load_default() if fontFullPathTitle is None else ImageFont.truetype(fontFullPath, fontsize + 8)
+	delayFont = ImageFont.load_default() if fontFullPath is None else ImageFont.truetype(fontFullPath, fontsize + 4)
+	callingFont = ImageFont.load_default() if fontFullPath is None else ImageFont.truetype(fontCallingPoints, fontsize + 2)
+	messagesFont = ImageFont.load_default() if fontFullPath is None else ImageFont.truetype(fontCallingPoints, fontsize)
 
 	# Calculate image size
 	timeTable = timeTable.replace('\n', NEWLINE_REPLACEMENT_STRING)
@@ -1996,7 +1116,7 @@ def text2png(imageFileName, trainTextFile, parametersFileName, departuresAvailab
 				break
 
 			# Draw a destination with details
-			if 'On time' in line:
+			if constants.TrainStatus.ON_TIME.value in line:
 				# Train is running on time
 				draw.text((leftpadding, y), line, forcolour, font=departFont)
 
