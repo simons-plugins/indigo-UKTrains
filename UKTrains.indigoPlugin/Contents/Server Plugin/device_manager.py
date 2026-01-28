@@ -6,6 +6,7 @@ Functions for updating Indigo device states.
 """
 from typing import Any, Optional, List
 import constants
+from constants import TrainStatus
 from text_formatter import delayCalc, formatSpecials
 from darwin_api import _fetch_service_details
 
@@ -128,7 +129,7 @@ def _build_calling_points_string(service: Any) -> str:
 			errorHandler(f'WARNING - Estimated Time for calling point - unknown error: {e} - advise developer')
 
 	# Remove redundant "On time" text
-	cp_string = cp_string.replace('On time', '')
+	cp_string = cp_string.replace(TrainStatus.ON_TIME.value, '')
 
 	return cp_string
 
@@ -170,7 +171,7 @@ def _update_train_device_states(
 	dev.updateStateOnServer(f'{train_prefix}Issue', value=has_problem)
 
 	# Update reason
-	if 'On Time' in delay_msg:
+	if TrainStatus.ON_TIME.value in delay_msg:
 		dev.updateStateOnServer(f'{train_prefix}Reason', value='')
 	else:
 		dev.updateStateOnServer(f'{train_prefix}Reason', value='No reason provided')

@@ -135,7 +135,7 @@ class PluginLogger:
 
 # ========== Configuration Classes (extracted to config.py) ==========
 # Import configuration classes from config module
-from config import PluginConfig, PluginPaths, PluginConfiguration
+from config import PluginConfig, PluginPaths, PluginConfiguration, RuntimeConfig
 
 
 # ========== Module-level pytz check (runs at import time) ==========
@@ -753,30 +753,21 @@ class Plugin(indigo.PluginBase):
 		logTimeNextReset = time.time()+int(3600)
 		indigo.debugger()
 		while True:
-			# Get configuration
-			apiKey = self.pluginPrefs.get('darwinAPI', 'NO KEY')
-			darwinURL = self.pluginPrefs.get('darwinSite', 'No URL')
-			stationImage = self.pluginPrefs.get('createMaps', "true")
-			refreshFreq = int(self.pluginPrefs.get('updateFreq','60'))
+			# Load configuration once per loop using RuntimeConfig
+			runtime_config = RuntimeConfig.from_plugin_prefs(self.pluginPrefs)
 			self.config.debug = self.pluginPrefs.get('checkboxDebug1', False)
-
-			# Get colours for display or defaults
-			forcolour = self.pluginPrefs.get('forcolour', '#0F0')
-			bgcolour = self.pluginPrefs.get('bgcolour', '#000')
-			isscolour = self.pluginPrefs.get('isscolour', '#F00')
-			cpcolour = self.pluginPrefs.get('cpcolour', '#FFF')
-			ticolour = self.pluginPrefs.get('ticolour', '#0FF')
 
 			# Update image path if it changed in preferences
 			user_image_path = self.pluginPrefs.get('imageFilename')
-			if user_image_path and stationImage:
+			if user_image_path and runtime_config.create_images:
 				# User changed image path, reinitialize paths
 				self.paths = PluginPaths.initialize(_MODULE_PYPATH.rstrip('/'), user_image_path)
 
-			# Create parameters file using pathlib
+			# Create parameters file using ColorScheme
 			parameters_file = self.paths.get_parameters_file()
+			colors = runtime_config.color_scheme
 			with open(parameters_file, 'w') as f:
-				f.write(f'{forcolour},{bgcolour},{isscolour},{ticolour},{cpcolour},9,3,3,720')
+				f.write(f'{colors.foreground},{colors.background},{colors.issue},{colors.title},{colors.calling_points},9,3,3,720')
 
 			# Note: Update checker functionality removed - self.updater was never initialized
 			# If update checking is needed in the future, initialize self.updater in __init__
@@ -810,7 +801,7 @@ class Plugin(indigo.PluginBase):
 					dev.updateStateOnServer('destinationCRS',value = dev.pluginProps['destinationCode'])
 
 					# Update the device with the latest information
-					deviceRefresh = routeUpdate(dev, apiKey, darwinURL, self.paths)
+					deviceRefresh = routeUpdate(dev, runtime_config.api_key, runtime_config.darwin_url, self.paths)
 
 					if not deviceRefresh:
 						# Update failed - probably due to SOAP server timeout
@@ -836,7 +827,7 @@ class Plugin(indigo.PluginBase):
 					dev.updateStateImageOnServer(indigo.kStateImageSel.SensorOff)
 					dev.updateStateOnServer('deviceStatus', value = 'Not active')
 
-			self.sleep(refreshFreq)
+			self.sleep(runtime_config.refresh_freq)
 
 		# Broken out of TRUE loop so shutdown
 		self.shutdown()
@@ -871,16 +862,11 @@ class Plugin(indigo.PluginBase):
 			with open(station_codes_file, "r") as stations:
 				# Extract the data to dictionary
 				# Data format is CRS,Station Name (csv)
-				local_station_dict = {}
-				stationList = []
-				for line in stations:
-					stationDetails = line
-					stationCRS = stationDetails[:3]
-					stationName = stationDetails[4:].replace('\r\n','')
-
-					# Add to dictionary
-					local_station_dict[stationName]=stationName
-					stationList.append(stationName)
+				lines = stations.readlines()
+				# Build station list using comprehension
+				stationList = [line[4:].replace('\r\n', '') for line in lines]
+				# Build dictionary for lookup (maps name to name for consistency)
+				local_station_dict = {line[4:].replace('\r\n', ''): line[4:].replace('\r\n', '') for line in lines}
 		except (IOError, OSError) as e:
 			# Couldn't find stations file - advise user and exit
 			self.plugin_logger.error(f"*** Could not open station code file {station_codes_file}: {e} ***")
@@ -908,8 +894,6 @@ class Plugin(indigo.PluginBase):
 	def createStationDict(self):
 
 		# Refresh the station codes from file
-		localStationDict = {}
-
 		# Open the station codes file using pathlib
 		station_codes_file = self.paths.station_codes_file
 
@@ -917,13 +901,11 @@ class Plugin(indigo.PluginBase):
 			with open(station_codes_file, "r") as stations:
 				# Extract the data to dictionary
 				# Data format is CRS,Station Name (csv)
-				for line in stations:
-					stationDetails = line
-					stationCRS = stationDetails[:3]
-					stationName = stationDetails[4:].replace('\r\n','')
-
-					# Add to dictionary
-					localStationDict[stationName]=stationCRS
+				# Build dictionary using comprehension: {station_name: CRS_code}
+				localStationDict = {
+					line[4:].replace('\r\n', ''): line[:3]
+					for line in stations
+				}
 		except (IOError, OSError) as e:
 			# Couldn't find stations file - advise user and exit
 			self.plugin_logger.error(f"*** Could not open station code file {station_codes_file}: {e} ***")
@@ -1134,7 +1116,7 @@ def text2png(imageFileName, trainTextFile, parametersFileName, departuresAvailab
 				break
 
 			# Draw a destination with details
-			if 'On time' in line:
+			if constants.TrainStatus.ON_TIME.value in line:
 				# Train is running on time
 				draw.text((leftpadding, y), line, forcolour, font=departFont)
 

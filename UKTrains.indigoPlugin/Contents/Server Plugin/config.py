@@ -33,6 +33,43 @@ class PluginConfig:
 
 
 @dataclass
+class RuntimeConfig:
+	"""Runtime configuration loaded from plugin preferences.
+
+	Consolidates all preference reads in one place for efficiency.
+	"""
+	api_key: str
+	darwin_url: str
+	create_images: bool
+	refresh_freq: int
+	color_scheme: 'constants.ColorScheme'  # Forward reference
+
+	@classmethod
+	def from_plugin_prefs(cls, prefs: Dict[str, any]) -> 'RuntimeConfig':
+		"""Load configuration from plugin preferences dictionary.
+
+		Args:
+			prefs: Plugin preferences dictionary
+
+		Returns:
+			RuntimeConfig instance with current preferences
+		"""
+		return cls(
+			api_key=prefs.get('darwinAPI', 'NO KEY'),
+			darwin_url=prefs.get('darwinSite', 'https://lite.realtime.nationalrail.co.uk/OpenLDBWS/wsdl.aspx'),
+			create_images=prefs.get('createMaps', "true") == "true",
+			refresh_freq=int(prefs.get('updateFreq', '60')),
+			color_scheme=constants.ColorScheme(
+				foreground=prefs.get('forcolour', '#0F0'),
+				background=prefs.get('bgcolour', '#000'),
+				issue=prefs.get('isscolour', '#F00'),
+				calling_points=prefs.get('cpcolour', '#FFF'),
+				title=prefs.get('ticolour', '#0FF')
+			)
+		)
+
+
+@dataclass
 class PluginPaths:
 	"""Centralized path management for UK-Trains plugin"""
 

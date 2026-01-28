@@ -8,6 +8,7 @@ import time
 import datetime
 import re
 from typing import Tuple
+from constants import TrainStatus
 
 try:
 	import pytz
@@ -58,13 +59,13 @@ def delayCalc(scheduled_time: str, estimated_time: str) -> Tuple[bool, str]:
 	if not scheduled_time or not estimated_time or scheduled_time[0] not in '012' or estimated_time[0] not in '012':
 		# Handle null/None values safely
 		if scheduled_time and 'On' in scheduled_time or estimated_time and 'On' in estimated_time:
-			delayMessage = 'On time'
+			delayMessage = TrainStatus.ON_TIME.value
 			trainProblem = False
 		elif scheduled_time and 'CAN' in scheduled_time.upper() or estimated_time and 'CAN' in estimated_time.upper():
-			delayMessage = 'Cancelled'
+			delayMessage = TrainStatus.CANCELLED.value
 			trainProblem = True
 		else:
-			delayMessage = 'Delayed'
+			delayMessage = TrainStatus.DELAYED.value
 			trainProblem = True
 	else:
 		# It's a time so calculate the delay
@@ -80,21 +81,21 @@ def delayCalc(scheduled_time: str, estimated_time: str) -> Tuple[bool, str]:
 		if delay_minutes < 0:
 			# Train is early (estimated < scheduled)
 			if abs(delay_minutes) == 1:
-				delayMessage = '1 min early'
+				delayMessage = f'1 min {TrainStatus.EARLY.value}'
 			else:
-				delayMessage = f'{abs(delay_minutes)} mins early'
+				delayMessage = f'{abs(delay_minutes)} mins {TrainStatus.EARLY.value}'
 			trainProblem = True
 
 		elif delay_minutes > 0:
 			# Train is late (estimated > scheduled)
 			if delay_minutes == 1:
-				delayMessage = '1 min late'
+				delayMessage = f'1 min {TrainStatus.LATE.value}'
 			else:
-				delayMessage = f'{delay_minutes} mins late'
+				delayMessage = f'{delay_minutes} mins {TrainStatus.LATE.value}'
 			trainProblem = True
 		else:
 			# On time (estimated == scheduled)
-			delayMessage = 'On Time'
+			delayMessage = TrainStatus.ON_TIME.value
 			trainProblem = False
 
 	return trainProblem, delayMessage
