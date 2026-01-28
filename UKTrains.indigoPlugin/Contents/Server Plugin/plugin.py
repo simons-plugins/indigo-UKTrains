@@ -606,6 +606,53 @@ def _append_train_to_image(image_content, destination, include_calling_points, s
 					image_content.append('>>> ' + remaining)
 
 
+def _process_train_services(dev, session, board, image_content, include_calling_points, word_length=80):
+	"""
+	Process all train services from station board.
+
+	Main loop coordinator that fetches service details, updates device states,
+	and builds image content for each train.
+
+	Args:
+		dev: Indigo device object
+		session: DarwinLdbSession for API calls
+		board: StationBoard object
+		image_content: List to append formatted train data to
+		include_calling_points: Boolean for whether to include calling points
+		word_length: Maximum line length for image formatting
+
+	Returns:
+		Boolean indicating if any departures were found
+	"""
+	global nationalDebug
+
+	departures_found = False
+	services = getattr(board, 'train_services', [])
+
+	if nationalDebug:
+		indigo.server.log(f'Processing {len(services)} train services', level=logging.DEBUG)
+
+	for train_num, destination in enumerate(services[:constants.MAX_TRAINS_TRACKED], start=1):
+		if nationalDebug:
+			indigo.server.log(f'Processing train {train_num}: {destination}', level=logging.DEBUG)
+
+		departures_found = True
+
+		# Fetch full service details from Darwin API
+		service = _fetch_service_details(session, destination.service_id)
+		if service is None:
+			# API call failed, skip this service but continue with others
+			continue
+
+		# Update device states for this train
+		_update_train_device_states(dev, train_num, destination, service, include_calling_points)
+
+		# Build image content for this train
+		_append_train_to_image(image_content, destination, include_calling_points, service, word_length)
+
+	return departures_found
+
+
 def _format_station_board(image_content, departures_found, via_station, board, base_via, max_lines=30):
 	"""
 	Format image content array into final departure board display.
@@ -700,125 +747,72 @@ def routeUpdate(dev, apiAccess, networkrailURL, imagePath, parametersFileName):
 		errorHandler(f'WARNING ** SOAP resolution failed: {e} - will retry later when server less busy **')
 		return False
 
-	# Extract information on station and store
-	stationBoardName = getattr(stationBoardDetails, 'location_name', 'Unknown Station')
-	timeGenerated = getUKTime()
-	dev.updateStateOnServer('stationLong',  value = stationBoardName)
-	dev.updateStateOnServer('timeGenerated', value = timeGenerated)
+	# Update station metadata on device
+	station_name = getattr(stationBoardDetails, 'location_name', 'Unknown Station')
+	time_generated = getUKTime()
+	dev.updateStateOnServer('stationLong', value=station_name)
+	dev.updateStateOnServer('timeGenerated', value=time_generated)
 
-	# Ok let's get the details for all the services
-	# Maximum storage is 10 entries (after filtering)
-
-	# Calculate the destination filter for display
-	if stationEndCrs == 'ALL':
-		viaStation = ''
-		baseVia = ''
-	else:
-		baseVia = dev.states['destinationLong']
-		viaStation = '(via:' + baseVia + ')'
+	# Calculate destination display strings
+	base_via = dev.states.get('destinationLong', '')
+	via_station = f'(via:{base_via})' if stationEndCrs != 'ALL' else ''
 
 	if nationalDebug:
-		# Print debug information
-		indigo.server.log('-' * 30, level=logging.DEBUG)
-		indigo.server.log('Calculating the Departures Board for:' + stationBoardDetails.location_name + viaStation, level=logging.DEBUG)
-		indigo.server.log('Generated on:' + str(stationBoardDetails.generated_at)[11:19] + '\n', level=logging.DEBUG)
+		indigo.server.log(f'Departures Board: {station_name} {via_station}', level=logging.DEBUG)
 
-	# Image parameters set up
-	imageContent = []
-	columnTitles = "Destination,Sch,Est,By"
-	imageContent.append(columnTitles)
-	textPath = imagePath
-	imageFileName = imagePath+'/'+stationStartCrs+stationEndCrs+'timetable.png'
+	# Initialize image content array
+	image_content = ['Destination,Sch,Est,By']
+	image_filename = f'{imagePath}/{stationStartCrs}{stationEndCrs}timetable.png'
 
-	if nationalDebug:
-		indigo.server.log('Image File:'+imageFileName, level=logging.DEBUG)
-
-	wordLength = 80
-	maxLines = 30
+	# Process all train services
 	include_calling_points = dev.pluginProps.get('includeCalling', False)
+	departures_found = _process_train_services(
+		dev,
+		darwinSession,
+		stationBoardDetails,
+		image_content,
+		include_calling_points,
+		word_length=80
+	)
 
-	departuresFound = False
-	currentTrain = 0
-
-	if nationalDebug:
-		indigo.server.log('Number of destinations = '+str(len(stationBoardDetails.train_services)), level=logging.DEBUG)
-
-	# Process each train service (up to MAX_TRAINS_TRACKED)
-	for destination in stationBoardDetails.train_services:
-		if nationalDebug:
-			indigo.server.log('Train is = ', str(destination), level=logging.DEBUG)
-
-		# Limit to MAX_TRAINS_TRACKED services per device
-		currentTrain += 1
-		if currentTrain > constants.MAX_TRAINS_TRACKED:
-			break
-
-		departuresFound = True
-
-		# Fetch full service details from Darwin API
-		service = _fetch_service_details(darwinSession, destination.service_id)
-		if service is None:
-			# API call failed, skip this service but continue with others
-			continue
-
-		# Update device states for this train
-		_update_train_device_states(dev, currentTrain, destination, service, include_calling_points)
-
-		# Build image content for this train
-		_append_train_to_image(imageContent, destination, include_calling_points, service, wordLength)
-
-	# Update station-level issues flag based on train states
+	# Update station-level issues flag
 	_update_station_issues_flag(dev)
 
-	# Process special messages from NRCC
-	testingMessages = False  # Test messages flag (remove after BETA)
-	specialMessages = _process_special_messages(stationBoardDetails, dev, testing_mode=testingMessages)
-
-	# Prepare departure board titles and metadata
-	departureBoardTitles = ("Departures - "+stationBoardDetails.location_name + ' '+ viaStation + ' '*60)[:60]+'\n'
-	departureStatistics = 'Generated on:' + timeGenerated+'\n'
-	departureMessages = specialMessages+'\n'
-
-	# Format the station board from image content
-	stationBoard = _format_station_board(
-		imageContent,
-		departuresFound,
-		viaStation,
+	# Process special messages and format board
+	special_messages = _process_special_messages(stationBoardDetails, dev, testing_mode=False)
+	board_titles = f"Departures - {station_name} {via_station}{' ' * 60}"[:60] + '\n'
+	board_stats = f'Generated on:{time_generated}\n'
+	station_board = _format_station_board(
+		image_content,
+		departures_found,
+		via_station,
 		stationBoardDetails,
-		baseVia,
-		max_lines=maxLines
+		base_via,
+		max_lines=30
 	)
 
-	# Ready to create image from information
-	# Create a text file for the departure board
-	trainText = textPath+'/'+stationStartCrs+stationEndCrs+'departureBoard.txt'
+	# Write departure board text file
+	train_text_file = f'{imagePath}/{stationStartCrs}{stationEndCrs}departureBoard.txt'
 	_write_departure_board_text(
-		trainText,
+		train_text_file,
 		station_start=stationStartCrs,
 		station_end=stationEndCrs,
-		titles=departureBoardTitles,
-		statistics=departureStatistics,
-		messages=departureMessages,
-		board_content=stationBoard
+		titles=board_titles,
+		statistics=board_stats,
+		messages=special_messages + '\n',
+		board_content=station_board
 	)
 
-	# Now run an instance of python with the corrent information to create a file for the Refreshing URL funcitonality
-	if departuresFound:
-		departuresAvailable = 'YES'
-	else:
-		departuresAvailable = 'NO'
-
-	# Generate PNG image from text file using subprocess
+	# Generate PNG image from text file
 	indigo.debugger()
-	imgResult = _generate_departure_image(
+	_generate_departure_image(
 		pypath,
-		imageFileName,
-		trainText,
+		image_filename,
+		train_text_file,
 		parametersFileName,
-		departures_available=(departuresAvailable == 'YES')
+		departures_available=departures_found
 	)
-	if nationalDebug:
-		indigo.server.log(f'Image generation result: {imgResult}')
+
 	return True
 
 def nationalRailLogin(wsdl = 'https://lite.realtime.nationalrail.co.uk/OpenLDBWS/wsdl.aspx',api_key='NO KEY'):
