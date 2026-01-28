@@ -1,5 +1,7 @@
-suds==1.1.2
+zeep>=4.2.1                # Modern SOAP client (replaces SUDS)
+lxml>=4.9.0                # Required by zeep for XML processing
+requests>=2.31.0           # Required by zeep for HTTP transport
 pytz==2023.2
 pydantic==2.5.3
 tenacity==8.2.3
-Pillow>=10.0.0  # Used by text2png.py subprocess for image generation
+Pillow>=10.0.0             # Used by text2png.py subprocess for image generation

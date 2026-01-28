@@ -1,34 +1,15 @@
-from suds.client import Client
-from suds.transport.http import HttpTransport
-
-from suds.sax.element import Element
-from suds import WebFault
+from zeep import Client
+from zeep.transports import Transport
+from zeep.exceptions import Fault as WebFault
+from zeep.plugins import HistoryPlugin
+from requests import Session
 from functools import partial
 import logging
 import os
 
 log = logging.getLogger(__name__)
 # TODO - timeouts and error handling
-DARWIN_WEBSERVICE_NAMESPACE = (
-    'com',
-    'http://thalesgroup.com/RTTI/2010-11-01/ldb/commontypes'
-)
-
-
-class WellBehavedHttpTransport(HttpTransport):
-    """
-    Suds HttpTransport which properly obeys the ``*_proxy`` environment
-    variables.
-    """
-
-    def u2handlers(self):
-        """
-        Override suds HTTP Transport as it does not properly honor local
-        system configuration for proxy settings
-
-        Derived from https://gist.github.com/rbarrois/3721801
-        """
-        return []
+DARWIN_WEBSERVICE_NAMESPACE = 'http://thalesgroup.com/RTTI/2010-11-01/ldb/commontypes'
 
 
 class DarwinLdbSession(object):
@@ -52,17 +33,48 @@ class DarwinLdbSession(object):
             wsdl = os.environ['DARWIN_WEBSERVICE_WSDL']
         if not api_key:
             api_key = os.environ['DARWIN_WEBSERVICE_API_KEY']
-        self._soap_client = Client(wsdl, transport=WellBehavedHttpTransport())
-        self._soap_client.set_options(timeout=timeout)
-        # build soap headers
-        token3 = Element('AccessToken', ns=DARWIN_WEBSERVICE_NAMESPACE)
-        token_value = Element('TokenValue', ns=DARWIN_WEBSERVICE_NAMESPACE)
-        token_value.setText(api_key)
-        token3.append(token_value)
-        self._soap_client.set_options(soapheaders=(token3))
+
+        # Create requests session with timeout
+        session = Session()
+        session.verify = True
+        transport = Transport(session=session, timeout=timeout, operation_timeout=timeout)
+
+        # Create history plugin for debugging (optional)
+        history = HistoryPlugin()
+
+        # Create ZEEP client
+        self._soap_client = Client(
+            wsdl,
+            transport=transport,
+            plugins=[history]
+        )
+
+        # Build SOAP header for Darwin API authentication
+        # Darwin uses AccessToken with TokenValue in specific namespace
+        from zeep import xsd
+
+        # Create header elements
+        header = xsd.Element(
+            '{' + DARWIN_WEBSERVICE_NAMESPACE + '}AccessToken',
+            xsd.ComplexType([
+                xsd.Element(
+                    '{' + DARWIN_WEBSERVICE_NAMESPACE + '}TokenValue',
+                    xsd.String()
+                )
+            ])
+        )
+
+        # Create header value
+        header_value = header(TokenValue=api_key)
+
+        # Store for use in requests
+        self._soap_headers = header_value
+        self._history = history
 
     def _base_query(self):
-        return self._soap_client.service['LDBServiceSoap']
+        # ZEEP uses service directly, bind to specific port if needed
+        # Darwin WSDL has LDBServiceSoap port
+        return self._soap_client.bind('LDBServiceSoap')
 
     def get_station_board(
         self,
@@ -103,8 +115,10 @@ class DarwinLdbSession(object):
                 "get_station_board must have either include_departures or \
 include_arrivals set to True"
             )
-        # build a query function
-        q = partial(self._base_query()[query_type], crs=crs, numRows=rows)
+        # build a query function - ZEEP uses getattr to access operations
+        service_binding = self._base_query()
+        query_method = getattr(service_binding, query_type)
+        q = partial(query_method, crs=crs, numRows=rows, _soapheaders=[self._soap_headers])
         if destination_crs:
             if origin_crs:
                 log.warning(
@@ -128,10 +142,13 @@ destination_crs and origin_crs, using only destination_crs"
         Positional arguments:
         service_id: A Darwin LDB service id
         """
-        service_query = \
-            self._soap_client.service['LDBServiceSoap']['GetServiceDetails']
+        service_binding = self._base_query()
+        service_query = service_binding.GetServiceDetails
         try:
-            soap_response = service_query(serviceID=service_id)
+            soap_response = service_query(
+                serviceID=service_id,
+                _soapheaders=[self._soap_headers]
+            )
         except WebFault:
             raise WebServiceError
         return ServiceDetails(soap_response)

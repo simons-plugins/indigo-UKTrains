@@ -197,9 +197,9 @@ except ImportError as e:
 	sys.exit(3)
 
 try:
-	import suds
+	from zeep.exceptions import Fault as WebFault
 except ImportError as e:
-	indigo.server.log(f"** Couldn't find suds module: {e} - check forums for install process for your system **", level=logging.CRITICAL)
+	indigo.server.log(f"** Couldn't find zeep module: {e} - check forums for install process for your system **", level=logging.CRITICAL)
 	sys.exit(4)
 
 try:
@@ -315,7 +315,7 @@ def routeUpdate(dev, apiAccess, networkrailURL, paths):
 	# Fetch station board with optional destination filter
 	try:
 		stationBoardDetails = _fetch_station_board(darwinSession, stationStartCrs, stationEndCrs)
-	except (suds.WebFault, Exception) as e:
+	except (WebFault, Exception) as e:
 		errorHandler(f'WARNING ** SOAP resolution failed: {e} - will retry later when server less busy **')
 		return False
 

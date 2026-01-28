@@ -8,9 +8,9 @@ import sys
 from typing import Optional, Any, Tuple
 
 try:
-	import suds
+	from zeep.exceptions import Fault as WebFault
 except ImportError:
-	suds = None
+	WebFault = None
 
 try:
 	from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
@@ -66,13 +66,13 @@ def darwin_api_retry(max_attempts: int = 3):
 			return func
 		return identity_decorator
 
-	# Import suds here to avoid circular dependency
-	import suds
+	# Import zeep WebFault here to avoid circular dependency
+	from zeep.exceptions import Fault as WebFault
 
 	return retry(
 		stop=stop_after_attempt(max_attempts),
 		wait=wait_exponential(multiplier=1, min=1, max=10),
-		retry=retry_if_exception_type((suds.WebFault, ConnectionError, TimeoutError)),
+		retry=retry_if_exception_type((WebFault, ConnectionError, TimeoutError)),
 		before_sleep=_log_retry_attempt,
 		reraise=True
 	)
@@ -98,7 +98,7 @@ def _fetch_station_board(
 		StationBoard object from Darwin API
 
 	Raises:
-		suds.WebFault: If SOAP request fails after all retries
+		zeep.exceptions.Fault: If SOAP request fails after all retries
 		Exception: For other API errors after all retries
 	"""
 	if end_crs and end_crs != constants.ALL_DESTINATIONS_CRS:
@@ -136,7 +136,7 @@ def _fetch_service_details(session: Any, service_id: str) -> Optional[Any]:
 	try:
 		service = session.get_service_details(service_id)
 		return service
-	except (suds.WebFault, ConnectionError, TimeoutError) as e:
+	except (WebFault, ConnectionError, TimeoutError) as e:
 		# Log the error but return None to allow other services to process
 		# Note: errorHandler function is in plugin.py - will need to pass or use logger
 		print(f'ERROR: Service details fetch failed after retries: {e}', file=sys.stderr)
