@@ -278,7 +278,7 @@ from image_generator import (
 # _format_station_board moved to image_generator.py
 
 
-def routeUpdate(dev, apiAccess, networkrailURL, paths):
+def routeUpdate(dev, apiAccess, networkrailURL, paths, logger):
 	"""
 	Update train departure device with latest information from Darwin API.
 
@@ -287,6 +287,7 @@ def routeUpdate(dev, apiAccess, networkrailURL, paths):
 		apiAccess: Darwin API key
 		networkrailURL: Darwin WSDL URL
 		paths: PluginPaths object with all file paths
+		logger: Plugin logger for error reporting
 
 	Returns:
 		True if update successful, False otherwise
@@ -377,13 +378,20 @@ def routeUpdate(dev, apiAccess, networkrailURL, paths):
 	# Generate PNG image from text file
 	indigo.debugger()
 	parameters_file = paths.get_parameters_file()
-	_generate_departure_image(
+	image_success = _generate_departure_image(
 		paths.plugin_root,
 		image_filename,
 		train_text_file,
 		parameters_file,
-		departures_available=departures_found
+		departures_available=departures_found,
+		device=dev,
+		logger=logger
 	)
+
+	if not image_success:
+		logger.error(f"Image generation failed for device '{dev.name}'")
+	else:
+		logger.debug(f"Image generation succeeded for device '{dev.name}'")
 
 	return True
 
@@ -801,7 +809,7 @@ class Plugin(indigo.PluginBase):
 					dev.updateStateOnServer('destinationCRS',value = dev.pluginProps['destinationCode'])
 
 					# Update the device with the latest information
-					deviceRefresh = routeUpdate(dev, runtime_config.api_key, runtime_config.darwin_url, self.paths)
+					deviceRefresh = routeUpdate(dev, runtime_config.api_key, runtime_config.darwin_url, self.paths, self.plugin_logger)
 
 					if not deviceRefresh:
 						# Update failed - probably due to SOAP server timeout
