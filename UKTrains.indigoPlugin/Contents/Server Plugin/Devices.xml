@@ -108,6 +108,12 @@
 				<TriggerLabel>Station Problems</TriggerLabel>
 				<ControlPageLabel>Station Problems</ControlPageLabel>
 			</State>
+			<State id="imageGenerationStatus"
+				   readonly="YES">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Image Generation Status</TriggerLabel>
+				<ControlPageLabel>Image Status</ControlPageLabel>
+			</State>
 			<State id="train1Dest"
 				   readonly="YES">
 				<ValueType>String</ValueType>
