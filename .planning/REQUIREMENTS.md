@@ -83,37 +83,37 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| SUB-01 | TBD | Pending |
-| SUB-02 | TBD | Pending |
-| SUB-03 | TBD | Pending |
-| SUB-04 | TBD | Pending |
-| SUB-05 | TBD | Pending |
-| CHG-01 | TBD | Pending |
-| CHG-02 | TBD | Pending |
-| CHG-03 | TBD | Pending |
-| CHG-04 | TBD | Pending |
-| CHG-05 | TBD | Pending |
-| ERR-01 | TBD | Pending |
-| ERR-02 | TBD | Pending |
-| ERR-03 | TBD | Pending |
-| ERR-04 | TBD | Pending |
-| ERR-05 | TBD | Pending |
-| ERR-06 | TBD | Pending |
-| ERR-07 | TBD | Pending |
-| PNG-01 | TBD | Pending |
-| PNG-02 | TBD | Pending |
-| PNG-03 | TBD | Pending |
-| PNG-04 | TBD | Pending |
-| PNG-05 | TBD | Pending |
-| BUG-01 | TBD | Pending |
-| BUG-02 | TBD | Pending |
-| BUG-03 | TBD | Pending |
+| SUB-01 | Phase 1 | Pending |
+| SUB-02 | Phase 1 | Pending |
+| SUB-03 | Phase 1 | Pending |
+| SUB-04 | Phase 1 | Pending |
+| SUB-05 | Phase 1 | Pending |
+| BUG-01 | Phase 1 | Pending |
+| CHG-01 | Phase 2 | Pending |
+| CHG-02 | Phase 2 | Pending |
+| CHG-03 | Phase 2 | Pending |
+| CHG-04 | Phase 2 | Pending |
+| CHG-05 | Phase 2 | Pending |
+| BUG-02 | Phase 2 | Pending |
+| ERR-01 | Phase 3 | Pending |
+| ERR-02 | Phase 3 | Pending |
+| ERR-03 | Phase 3 | Pending |
+| ERR-04 | Phase 3 | Pending |
+| ERR-05 | Phase 3 | Pending |
+| ERR-06 | Phase 3 | Pending |
+| ERR-07 | Phase 3 | Pending |
+| PNG-01 | Phase 3 | Pending |
+| PNG-02 | Phase 3 | Pending |
+| PNG-03 | Phase 3 | Pending |
+| PNG-04 | Phase 3 | Pending |
+| PNG-05 | Phase 3 | Pending |
+| BUG-03 | Phase 3 | Pending |
 
 **Coverage:**
 - v1 requirements: 26 total
-- Mapped to phases: 0 (pending roadmap)
-- Unmapped: 26 ⚠️
+- Mapped to phases: 26/26 (100%)
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-02-01*
-*Last updated: 2026-02-01 after initial definition*
+*Last updated: 2026-02-01 after roadmap creation*
