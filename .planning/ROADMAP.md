@@ -27,10 +27,10 @@ Decimal phases appear between their surrounding integers in numeric order.
   2. Device state updates when subprocess times out or fails
   3. Subprocess stderr appears in plugin logs for debugging
   4. Color definitions from constants.py correctly passed to text2png.py
-**Plans**: TBD
+**Plans**: 1 plan
 
 Plans:
-- [ ] 01-01: TBD
+- [ ] 01-01-PLAN.md - Add timeout, error handling, and stderr capture to subprocess execution
 
 ### Phase 2: Change Detection
 **Goal**: Image regeneration only occurs when departure board data actually changes
@@ -67,10 +67,10 @@ Plans:
 ## Progress
 
 **Execution Order:**
-Phases execute in numeric order: 1 → 2 → 3
+Phases execute in numeric order: 1 -> 2 -> 3
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Subprocess Reliability | 0/TBD | Not started | - |
+| 1. Subprocess Reliability | 0/1 | Planned | - |
 | 2. Change Detection | 0/TBD | Not started | - |
 | 3. Error Handling & PNG Quality | 0/TBD | Not started | - |
