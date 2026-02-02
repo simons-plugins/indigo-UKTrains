@@ -12,7 +12,7 @@ Fix and modernize the UK-Trains plugin's broken departure board PNG generation t
 
 Decimal phases appear between their surrounding integers in numeric order.
 
-- [ ] **Phase 1: Subprocess Reliability** - Prevent unbounded hangs with timeout enforcement
+- [x] **Phase 1: Subprocess Reliability** - Prevent unbounded hangs with timeout enforcement
 - [ ] **Phase 2: Change Detection** - Skip unnecessary regenerations with content hashing
 - [ ] **Phase 3: Error Handling & PNG Quality** - Comprehensive error handling and image quality fixes
 
@@ -30,7 +30,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 **Plans**: 1 plan
 
 Plans:
-- [ ] 01-01-PLAN.md - Add timeout, error handling, and stderr capture to subprocess execution
+- [x] 01-01-PLAN.md - Add timeout, error handling, and stderr capture to subprocess execution
 
 ### Phase 2: Change Detection
 **Goal**: Image regeneration only occurs when departure board data actually changes
@@ -71,6 +71,6 @@ Phases execute in numeric order: 1 -> 2 -> 3
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Subprocess Reliability | 0/1 | Planned | - |
+| 1. Subprocess Reliability | 1/1 | ✓ Complete | 2026-02-02 |
 | 2. Change Detection | 0/TBD | Not started | - |
 | 3. Error Handling & PNG Quality | 0/TBD | Not started | - |

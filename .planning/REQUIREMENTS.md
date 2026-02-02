@@ -9,11 +9,11 @@ Requirements for this fix/modernization release. Each maps to roadmap phases.
 
 ### Subprocess Reliability
 
-- [ ] **SUB-01**: Subprocess execution has 10-second timeout to prevent unbounded hangs
-- [ ] **SUB-02**: TimeoutExpired exceptions are caught and logged with device name
-- [ ] **SUB-03**: Device state updates when subprocess times out
-- [ ] **SUB-04**: Subprocess stderr is captured and written to plugin logs
-- [ ] **SUB-05**: Subprocess uses `subprocess.run()` (not deprecated `call()`)
+- [x] **SUB-01**: Subprocess execution has 10-second timeout to prevent unbounded hangs
+- [x] **SUB-02**: TimeoutExpired exceptions are caught and logged with device name
+- [x] **SUB-03**: Device state updates when subprocess times out
+- [x] **SUB-04**: Subprocess stderr is captured and written to plugin logs
+- [x] **SUB-05**: Subprocess uses `subprocess.run()` (not deprecated `call()`)
 
 ### Change Detection
 
@@ -43,7 +43,7 @@ Requirements for this fix/modernization release. Each maps to roadmap phases.
 
 ### Bug Fixes
 
-- [ ] **BUG-01**: Color definitions from constants.py correctly passed to text2png.py
+- [x] **BUG-01**: Color definitions from constants.py correctly passed to text2png.py
 - [ ] **BUG-02**: PNG generation executes when Darwin API data updates
 - [ ] **BUG-03**: One PNG file generated per route device (not shared across devices)
 
