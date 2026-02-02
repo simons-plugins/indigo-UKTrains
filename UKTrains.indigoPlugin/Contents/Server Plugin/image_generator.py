@@ -95,6 +95,12 @@ def _generate_departure_image(
 ) -> bool:
 	"""Launch subprocess to generate PNG image from text file.
 
+	Handles text2png.py exit codes:
+		0 = Success
+		1 = File I/O error (read/write failures)
+		2 = PIL/Pillow error (font loading, image creation)
+		3 = Other error (arguments, configuration)
+
 	Args:
 		plugin_root: Path to plugin root directory (Path object)
 		image_filename: Path where PNG will be saved (Path object)
@@ -124,42 +130,84 @@ def _generate_departure_image(
 			capture_output=True,  # Capture both stdout and stderr
 			text=True,            # Decode as strings
 			timeout=10,           # 10-second timeout for image generation
-			check=True            # Raise CalledProcessError on non-zero exit
+			check=False           # Handle exit codes manually
 		)
 
 		# Log subprocess output for debugging
 		if result.stdout:
 			logger.debug(f"Image generation stdout: {result.stdout}")
 		if result.stderr:
-			# PIL may write to stderr even on success
 			logger.debug(f"Image generation stderr: {result.stderr}")
 
-		device.updateStateOnServer('imageGenerationStatus', 'success')
-		return True
+		# Handle exit codes
+		if result.returncode == 0:
+			# Success
+			logger.debug(f"Image generated successfully for '{device.name}'")
+			device.updateStateOnServer('imageGenerationStatus', 'success')
+			device.updateStateOnServer('imageGenerationError', '')
+			return True
+
+		elif result.returncode == 1:
+			# File I/O error
+			error_msg = "File I/O error: cannot read input files or write PNG"
+			logger.error(f"{error_msg} for device '{device.name}'")
+			if result.stderr:
+				logger.error(f"Details: {result.stderr}")
+			device.updateStateOnServer('imageGenerationStatus', 'failed')
+			device.updateStateOnServer('imageGenerationError', error_msg)
+			return False
+
+		elif result.returncode == 2:
+			# PIL/Pillow error
+			error_msg = "PIL error: font loading or image creation failed"
+			logger.error(f"{error_msg} for device '{device.name}'")
+			if result.stderr:
+				logger.error(f"Details: {result.stderr}")
+			device.updateStateOnServer('imageGenerationStatus', 'failed')
+			device.updateStateOnServer('imageGenerationError', error_msg)
+			return False
+
+		elif result.returncode == 3:
+			# Other error (arguments, configuration)
+			error_msg = "Configuration error in image generation"
+			logger.error(f"{error_msg} for device '{device.name}'")
+			if result.stderr:
+				logger.error(f"Details: {result.stderr}")
+			device.updateStateOnServer('imageGenerationStatus', 'failed')
+			device.updateStateOnServer('imageGenerationError', error_msg)
+			return False
+
+		else:
+			# Unknown exit code
+			error_msg = f"Unknown error (exit code {result.returncode})"
+			logger.error(f"{error_msg} for device '{device.name}'")
+			if result.stderr:
+				logger.error(f"Details: {result.stderr}")
+			device.updateStateOnServer('imageGenerationStatus', 'failed')
+			device.updateStateOnServer('imageGenerationError', error_msg)
+			return False
 
 	except subprocess.TimeoutExpired as e:
-		logger.error(f"Image generation timed out for device '{device.name}' after 10 seconds")
+		error_msg = "Timeout after 10 seconds"
+		logger.error(f"Image generation timed out for device '{device.name}'")
 		if e.stderr:
 			logger.error(f"stderr before timeout: {e.stderr}")
 		device.updateStateOnServer('imageGenerationStatus', 'timeout')
-		return False
-
-	except subprocess.CalledProcessError as e:
-		logger.error(f"Image generation failed for device '{device.name}' with exit code {e.returncode}")
-		logger.error(f"stderr: {e.stderr}")
-		if e.stdout:
-			logger.debug(f"stdout: {e.stdout}")
-		device.updateStateOnServer('imageGenerationStatus', 'failed')
+		device.updateStateOnServer('imageGenerationError', error_msg)
 		return False
 
 	except FileNotFoundError:
-		logger.error(f"Python interpreter not found: {constants.PYTHON3_PATH}")
+		error_msg = f"Python interpreter not found: {constants.PYTHON3_PATH}"
+		logger.error(error_msg)
 		device.updateStateOnServer('imageGenerationStatus', 'config_error')
+		device.updateStateOnServer('imageGenerationError', error_msg)
 		return False
 
 	except Exception as e:
+		error_msg = f"Unexpected error: {str(e)}"
 		logger.exception(f"Unexpected error generating image for device '{device.name}'")
 		device.updateStateOnServer('imageGenerationStatus', 'error')
+		device.updateStateOnServer('imageGenerationError', error_msg)
 		return False
 
 
