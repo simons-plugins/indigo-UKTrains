@@ -41,10 +41,10 @@ Plans:
   2. PNG regeneration skipped when hash matches previous generation
   3. Hash stored in device state and updated after successful generation
   4. PNG generation executes when Darwin API data updates
-**Plans**: TBD
+**Plans**: 1 plan
 
 Plans:
-- [ ] 02-01: TBD
+- [ ] 02-01-PLAN.md - Add SHA-256 content hashing to detect board data changes
 
 ### Phase 3: Error Handling & PNG Quality
 **Goal**: Comprehensive error handling with proper exit codes and high-quality PNG output across all display contexts
@@ -71,6 +71,6 @@ Phases execute in numeric order: 1 -> 2 -> 3
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Subprocess Reliability | 1/1 | ✓ Complete | 2026-02-02 |
-| 2. Change Detection | 0/TBD | Not started | - |
+| 1. Subprocess Reliability | 1/1 | Complete | 2026-02-02 |
+| 2. Change Detection | 0/1 | Planned | - |
 | 3. Error Handling & PNG Quality | 0/TBD | Not started | - |
