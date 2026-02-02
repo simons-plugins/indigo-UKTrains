@@ -12,7 +12,7 @@ Reliable, high-quality departure board images that display train information acr
 
 ### Validated
 
-These capabilities exist in the current codebase and work correctly:
+Capabilities delivered and verified in production:
 
 - ✓ Darwin API integration with authentication and retry logic — existing
 - ✓ Route device management tracking up to 10 trains per station — existing
@@ -21,18 +21,17 @@ These capabilities exist in the current codebase and work correctly:
 - ✓ Concurrent polling at configurable intervals (default 60s) — existing
 - ✓ Station-level issue aggregation (delays/cancellations) — existing
 - ✓ UK timezone handling with BST support — existing
+- ✓ PNG departure board generation working (1 per route device) — 2025.1.4
+- ✓ Image generation only runs when data changes (SHA-256 hashing) — 2025.1.4
+- ✓ Subprocess image generation with timeout enforcement — 2025.1.4
+- ✓ PNG quality suitable for Indigo control page display — 2025.1.4
+- ✓ PNG format compatible with Pushover notifications — 2025.1.4
+- ✓ PNG format suitable for iOS app integration — 2025.1.4
+- ✓ Color scheme properly applied (fixed regression) — 2025.1.4
 
 ### Active
 
-Current scope for this fix/modernization effort:
-
-- [ ] PNG departure board generation working again (1 per route device)
-- [ ] Image generation only runs when data changes (not every refresh)
-- [ ] Modern image generation approach (review subprocess vs in-process)
-- [ ] PNG quality suitable for Indigo control page display
-- [ ] PNG format compatible with Pushover notifications
-- [ ] PNG format suitable for iOS app integration
-- [ ] Color scheme properly applied (fixes regression from refactor)
+No active requirements - 2025.1.4 milestone complete. See `.planning/milestones/2025.1.4-REQUIREMENTS.md` for full v1 details.
 
 ### Out of Scope
 
@@ -44,31 +43,22 @@ Explicitly excluded from this effort:
 - Adding more than 10 trains per device — current limit is intentional
 - Darwin API schema changes — handle existing schema only
 
-## Context
+## Current State
 
-**Recent History:**
-- Plugin recently refactored to define color schemes in constants.py
-- After refactor, PNG generation stopped working
-- Text (.txt) file generation still works correctly
-- No errors visible in Indigo logs or NationRailErrors.log
+**Version:** 2025.1.4 shipped 2026-02-02
 
-**Current Implementation:**
-- Image generation uses text2png.py subprocess to avoid shared library conflicts
-- Subprocess spawned with PIL/Pillow to convert text data to PNG
-- Images saved to local folder for control page display
-- Current approach generates images on every update (even if data unchanged)
+**Codebase:** Production-ready PNG departure board generation
+- 3 phases, 4 plans, 26 requirements satisfied
+- Comprehensive error handling with timeout enforcement
+- Change detection with SHA-256 hashing
+- Cross-platform PNG compatibility verified
 
-**Codebase Quality:**
-From .planning/codebase/CONCERNS.md:
-- Subprocess integration is fragile (output logged to separate files)
-- No timeout enforcement on subprocess
-- Image generation lacks change detection
-- Only 5 trains displayed despite tracking 10
+**Known Issues:** None blocking
 
 **Display Contexts:**
-1. **Indigo Control Pages** - Primary current use, web display in home automation interface
-2. **Pushover Notifications** - Planned use for mobile delay alerts
-3. **iOS App** - Planned use in new native iOS app being developed
+1. **Indigo Control Pages** - Production, web display in home automation interface
+2. **Pushover Notifications** - Ready, PNG format compatible (<100KB)
+3. **iOS App** - Ready, PNG format suitable for UIImage display
 
 ## Constraints
 
@@ -82,8 +72,12 @@ From .planning/codebase/CONCERNS.md:
 
 | Decision | Rationale | Outcome |
 |----------|-----------|---------|
-| Keep PNG format | Required for Indigo, works with Pushover, compatible with iOS | — Pending |
-| Review subprocess approach | Current subprocess fragile, may be modernizable | — Pending |
+| Keep PNG format | Required for Indigo, works with Pushover, compatible with iOS | ✓ Good - 2025.1.4 verified |
+| Keep subprocess approach | Isolation prevents PIL library conflicts, timeout enforcement added | ✓ Good - 2025.1.4 modernized |
+| 10-second timeout | Generous buffer for I/O-bound operations, prevents hangs | ✓ Good - 2025.1.4 |
+| SHA-256 content hashing | Change detection skips unnecessary regeneration | ✓ Good - 2025.1.4 performance |
+| Standardized exit codes | Parent process categorizes errors (0/1/2/3) | ✓ Good - 2025.1.4 debugging |
+| Font fallback pattern | Graceful degradation when TrueType fonts unavailable | ✓ Good - 2025.1.4 reliability |
 
 ---
-*Last updated: 2026-02-01 after initialization*
+*Last updated: 2026-02-02 after 2025.1.4 milestone completion*
