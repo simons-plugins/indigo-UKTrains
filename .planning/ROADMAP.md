@@ -59,10 +59,11 @@ Plans:
   6. PNG images suitable for iOS UIImage display
   7. Color scheme properly applied to all generated images
   8. One PNG file generated per route device (not shared)
-**Plans**: TBD
+**Plans**: 2 plans
 
 Plans:
-- [ ] 03-01: TBD
+- [ ] 03-01-PLAN.md - Refactor text2png.py with standardized exit codes and font fallback
+- [ ] 03-02-PLAN.md - Implement exit code handling in parent process and add device error state
 
 ## Progress
 
@@ -73,4 +74,4 @@ Phases execute in numeric order: 1 -> 2 -> 3
 |-------|----------------|--------|-----------|
 | 1. Subprocess Reliability | 1/1 | Complete | 2026-02-02 |
 | 2. Change Detection | 1/1 | Complete | 2026-02-02 |
-| 3. Error Handling & PNG Quality | 0/TBD | Not started | - |
+| 3. Error Handling & PNG Quality | 0/2 | Planned | - |
