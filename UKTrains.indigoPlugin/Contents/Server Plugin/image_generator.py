@@ -124,6 +124,9 @@ def _generate_departure_image(
 		dep_flag
 	]
 
+	# DEBUG: Log exact command
+	logger.debug(f"Subprocess command: {cmd}")
+
 	try:
 		result = subprocess.run(
 			cmd,

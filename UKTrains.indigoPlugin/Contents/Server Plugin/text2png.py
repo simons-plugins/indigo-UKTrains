@@ -144,7 +144,7 @@ try:
             # Width is controlled in the main plugin
             line += ' ' + word
 
-        elif font.getsize(line + ' ' + word)[0] <= (width - rightpadding - leftpadding):
+        elif font.getlength(line + ' ' + word) <= (width - rightpadding - leftpadding):
             line += ' ' + word
 
         else:  # start a new line because the word is longer than a line
@@ -155,7 +155,9 @@ try:
         lines.append(line[1:])  # add the last line
 
     # Calculate image proportions
-    line_height = font.getsize(timeTable)[1]
+    # getsize() removed in Pillow 10.x - use getbbox() instead
+    bbox = font.getbbox(timeTable)
+    line_height = bbox[3] - bbox[1]  # bottom - top
     img_height = line_height * (30)
     line_height = int(line_height/1.5+0.5)
 
