@@ -17,11 +17,11 @@ Requirements for this fix/modernization release. Each maps to roadmap phases.
 
 ### Change Detection
 
-- [ ] **CHG-01**: Content hash computed from board text data and color parameters
-- [ ] **CHG-02**: Hash stored in device state as `image_content_hash`
-- [ ] **CHG-03**: PNG regeneration skipped if hash unchanged from previous update
-- [ ] **CHG-04**: Hash updated after successful PNG generation
-- [ ] **CHG-05**: Hash computation uses SHA256 algorithm
+- [x] **CHG-01**: Content hash computed from board text data and color parameters
+- [x] **CHG-02**: Hash stored in device state as `image_content_hash`
+- [x] **CHG-03**: PNG regeneration skipped if hash unchanged from previous update
+- [x] **CHG-04**: Hash updated after successful PNG generation
+- [x] **CHG-05**: Hash computation uses SHA256 algorithm
 
 ### Error Handling
 
@@ -44,7 +44,7 @@ Requirements for this fix/modernization release. Each maps to roadmap phases.
 ### Bug Fixes
 
 - [x] **BUG-01**: Color definitions from constants.py correctly passed to text2png.py
-- [ ] **BUG-02**: PNG generation executes when Darwin API data updates
+- [x] **BUG-02**: PNG generation executes when Darwin API data updates
 - [ ] **BUG-03**: One PNG file generated per route device (not shared across devices)
 
 ## v2 Requirements
@@ -83,18 +83,18 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| SUB-01 | Phase 1 | Pending |
-| SUB-02 | Phase 1 | Pending |
-| SUB-03 | Phase 1 | Pending |
-| SUB-04 | Phase 1 | Pending |
-| SUB-05 | Phase 1 | Pending |
-| BUG-01 | Phase 1 | Pending |
-| CHG-01 | Phase 2 | Pending |
-| CHG-02 | Phase 2 | Pending |
-| CHG-03 | Phase 2 | Pending |
-| CHG-04 | Phase 2 | Pending |
-| CHG-05 | Phase 2 | Pending |
-| BUG-02 | Phase 2 | Pending |
+| SUB-01 | Phase 1 | Complete |
+| SUB-02 | Phase 1 | Complete |
+| SUB-03 | Phase 1 | Complete |
+| SUB-04 | Phase 1 | Complete |
+| SUB-05 | Phase 1 | Complete |
+| BUG-01 | Phase 1 | Complete |
+| CHG-01 | Phase 2 | Complete |
+| CHG-02 | Phase 2 | Complete |
+| CHG-03 | Phase 2 | Complete |
+| CHG-04 | Phase 2 | Complete |
+| CHG-05 | Phase 2 | Complete |
+| BUG-02 | Phase 2 | Complete |
 | ERR-01 | Phase 3 | Pending |
 | ERR-02 | Phase 3 | Pending |
 | ERR-03 | Phase 3 | Pending |
@@ -116,4 +116,4 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 ---
 *Requirements defined: 2026-02-01*
-*Last updated: 2026-02-01 after roadmap creation*
+*Last updated: 2026-02-02 after phase 2 completion*
