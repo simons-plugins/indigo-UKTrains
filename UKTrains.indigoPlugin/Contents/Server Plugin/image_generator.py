@@ -7,6 +7,7 @@ Handles text file writing and subprocess spawning for PNG generation.
 from pathlib import Path
 import subprocess
 from typing import List, Optional, Any
+import hashlib
 import constants
 from text_formatter import delayCalc
 
@@ -18,6 +19,40 @@ def errorHandler(error_msg: str):
 	"""
 	import sys
 	print(f"ERROR: {error_msg}", file=sys.stderr)
+
+
+def compute_board_content_hash(
+	board_text_path: Path,
+	parameters_file_path: Path
+) -> str:
+	"""Compute SHA-256 hash of departure board content and rendering parameters.
+
+	Includes all inputs that affect visual output: board text and color scheme.
+	Any change to either component produces a different hash.
+
+	Args:
+		board_text_path: Path to departure board text file
+		parameters_file_path: Path to trainparameters.txt containing color config
+
+	Returns:
+		Lowercase hex-encoded SHA-256 hash (64 characters)
+	"""
+	hasher = hashlib.sha256()
+
+	# Hash departure board text content
+	with open(board_text_path, 'r', encoding='utf-8') as f:
+		board_content = f.read()
+	hasher.update(board_content.encode('utf-8'))
+
+	# Hash color parameters from parameters file
+	# File format: 'fg,bg,issue,title,calling_points,9,3,3,720'
+	# We hash the first 5 comma-separated values (the colors)
+	with open(parameters_file_path, 'r', encoding='utf-8') as f:
+		params_content = f.read().strip()
+	color_values = ','.join(params_content.split(',')[:5])
+	hasher.update(color_values.encode('utf-8'))
+
+	return hasher.hexdigest()
 
 
 def _write_departure_board_text(
