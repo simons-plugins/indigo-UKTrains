@@ -25,27 +25,27 @@ Requirements for this fix/modernization release. Each maps to roadmap phases.
 
 ### Error Handling
 
-- [ ] **ERR-01**: text2png.py returns exit code 0 for success
-- [ ] **ERR-02**: text2png.py returns exit code 1 for file I/O errors
-- [ ] **ERR-03**: text2png.py returns exit code 2 for PIL/Pillow errors
-- [ ] **ERR-04**: text2png.py returns exit code 3 for other errors
-- [ ] **ERR-05**: Parent process checks exit codes and logs specific error type
-- [ ] **ERR-06**: Device state updated with error message when generation fails
-- [ ] **ERR-07**: Font fallback implemented when specified font missing
+- [x] **ERR-01**: text2png.py returns exit code 0 for success
+- [x] **ERR-02**: text2png.py returns exit code 1 for file I/O errors
+- [x] **ERR-03**: text2png.py returns exit code 2 for PIL/Pillow errors
+- [x] **ERR-04**: text2png.py returns exit code 3 for other errors
+- [x] **ERR-05**: Parent process checks exit codes and logs specific error type
+- [x] **ERR-06**: Device state updated with error message when generation fails
+- [x] **ERR-07**: Font fallback implemented when specified font missing
 
 ### PNG Quality
 
-- [ ] **PNG-01**: PNG images display correctly in Indigo control pages
-- [ ] **PNG-02**: PNG format compatible with Pushover notification delivery
-- [ ] **PNG-03**: PNG images suitable for iOS UIImage display
-- [ ] **PNG-04**: Color scheme from recent refactor properly applied to images
-- [ ] **PNG-05**: Images saved to correct local folder path
+- [x] **PNG-01**: PNG images display correctly in Indigo control pages
+- [x] **PNG-02**: PNG format compatible with Pushover notification delivery
+- [x] **PNG-03**: PNG images suitable for iOS UIImage display
+- [x] **PNG-04**: Color scheme from recent refactor properly applied to images
+- [x] **PNG-05**: Images saved to correct local folder path
 
 ### Bug Fixes
 
 - [x] **BUG-01**: Color definitions from constants.py correctly passed to text2png.py
 - [x] **BUG-02**: PNG generation executes when Darwin API data updates
-- [ ] **BUG-03**: One PNG file generated per route device (not shared across devices)
+- [x] **BUG-03**: One PNG file generated per route device (not shared across devices)
 
 ## v2 Requirements
 
@@ -95,19 +95,19 @@ Which phases cover which requirements. Updated during roadmap creation.
 | CHG-04 | Phase 2 | Complete |
 | CHG-05 | Phase 2 | Complete |
 | BUG-02 | Phase 2 | Complete |
-| ERR-01 | Phase 3 | Pending |
-| ERR-02 | Phase 3 | Pending |
-| ERR-03 | Phase 3 | Pending |
-| ERR-04 | Phase 3 | Pending |
-| ERR-05 | Phase 3 | Pending |
-| ERR-06 | Phase 3 | Pending |
-| ERR-07 | Phase 3 | Pending |
-| PNG-01 | Phase 3 | Pending |
-| PNG-02 | Phase 3 | Pending |
-| PNG-03 | Phase 3 | Pending |
-| PNG-04 | Phase 3 | Pending |
-| PNG-05 | Phase 3 | Pending |
-| BUG-03 | Phase 3 | Pending |
+| ERR-01 | Phase 3 | Complete |
+| ERR-02 | Phase 3 | Complete |
+| ERR-03 | Phase 3 | Complete |
+| ERR-04 | Phase 3 | Complete |
+| ERR-05 | Phase 3 | Complete |
+| ERR-06 | Phase 3 | Complete |
+| ERR-07 | Phase 3 | Complete |
+| PNG-01 | Phase 3 | Complete |
+| PNG-02 | Phase 3 | Complete |
+| PNG-03 | Phase 3 | Complete |
+| PNG-04 | Phase 3 | Complete |
+| PNG-05 | Phase 3 | Complete |
+| BUG-03 | Phase 3 | Complete |
 
 **Coverage:**
 - v1 requirements: 26 total
@@ -116,4 +116,4 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 ---
 *Requirements defined: 2026-02-01*
-*Last updated: 2026-02-02 after phase 2 completion*
+*Last updated: 2026-02-02 after phase 3 completion*
