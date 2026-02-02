@@ -250,7 +250,8 @@ from image_generator import (
 	_write_departure_board_text,
 	_generate_departure_image,
 	_append_train_to_image,
-	_format_station_board
+	_format_station_board,
+	compute_board_content_hash,
 )
 
 
@@ -375,23 +376,41 @@ def routeUpdate(dev, apiAccess, networkrailURL, paths, logger):
 		board_content=station_board
 	)
 
-	# Generate PNG image from text file
-	indigo.debugger()
+	# Check if image regeneration needed using content hash
 	parameters_file = paths.get_parameters_file()
-	image_success = _generate_departure_image(
-		paths.plugin_root,
-		image_filename,
-		train_text_file,
-		parameters_file,
-		departures_available=departures_found,
-		device=dev,
-		logger=logger
-	)
+	current_hash = compute_board_content_hash(train_text_file, parameters_file)
+	previous_hash = dev.states.get('image_content_hash', '')
 
-	if not image_success:
-		logger.error(f"Image generation failed for device '{dev.name}'")
+	# Log hash comparison for debugging
+	if logger:
+		if previous_hash:
+			logger.debug(f"Content hash for '{dev.name}': prev={previous_hash[:16]}... curr={current_hash[:16]}...")
+		else:
+			logger.debug(f"No previous hash for '{dev.name}' (first generation)")
+
+	if current_hash != previous_hash:
+		# Content changed - regenerate image
+		logger.info(f"Board content changed for '{dev.name}', regenerating image")
+
+		image_success = _generate_departure_image(
+			paths.plugin_root,
+			image_filename,
+			train_text_file,
+			parameters_file,
+			departures_available=departures_found,
+			device=dev,
+			logger=logger
+		)
+
+		if image_success:
+			# Update hash only after successful generation
+			dev.updateStateOnServer('image_content_hash', current_hash)
+			logger.debug(f"Updated content hash for '{dev.name}'")
+		else:
+			logger.error(f"Image generation failed for '{dev.name}', will retry next cycle")
 	else:
-		logger.debug(f"Image generation succeeded for device '{dev.name}'")
+		# Content unchanged - skip generation
+		logger.debug(f"Board content unchanged for '{dev.name}', skipping image generation")
 
 	return True
 
