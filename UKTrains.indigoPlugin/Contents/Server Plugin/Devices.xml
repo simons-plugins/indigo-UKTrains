@@ -114,6 +114,12 @@
 				<TriggerLabel>Image Generation Status</TriggerLabel>
 				<ControlPageLabel>Image Status</ControlPageLabel>
 			</State>
+		<State id="imageGenerationError"
+			   readonly="YES">
+			<ValueType>String</ValueType>
+			<TriggerLabel>Image Generation Error</TriggerLabel>
+			<ControlPageLabel>Image Error</ControlPageLabel>
+		</State>
 			<State id="image_content_hash"
 				   readonly="YES">
 				<ValueType>String</ValueType>
