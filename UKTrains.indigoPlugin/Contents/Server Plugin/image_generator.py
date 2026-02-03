@@ -115,14 +115,6 @@ def _generate_departure_image(
 	"""
 	dep_flag = 'YES' if departures_available else 'NO'
 
-	# LOG ALL INPUTS FOR DEBUGGING
-	logger.info(f"=== IMAGE GENERATION DEBUG ===")
-	logger.info(f"Plugin root: {plugin_root}")
-	logger.info(f"Image file: {image_filename}")
-	logger.info(f"Text file: {text_filename}")
-	logger.info(f"Params file: {parameters_filename}")
-	logger.info(f"Dep flag: {dep_flag}")
-
 	cmd = [
 		constants.PYTHON3_PATH,
 		str(plugin_root / 'text2png.py'),
@@ -132,11 +124,8 @@ def _generate_departure_image(
 		dep_flag
 	]
 
-	# Log exact command with individual arguments
-	logger.info(f"Subprocess command: {cmd}")
-	logger.info(f"Command list length: {len(cmd)}")
-	for i, arg in enumerate(cmd):
-		logger.info(f"  arg[{i}]: {arg}")
+	# Log command for debugging (can be removed after confirming stable)
+	logger.debug(f"Generating image: {image_filename.name}")
 
 	try:
 		result = subprocess.run(
@@ -147,11 +136,9 @@ def _generate_departure_image(
 			check=False           # Handle exit codes manually
 		)
 
-		# Log subprocess output for debugging
-		if result.stdout:
-			logger.info(f"Image generation stdout: {result.stdout}")
+		# Log subprocess errors only
 		if result.stderr:
-			logger.info(f"Image generation stderr: {result.stderr}")
+			logger.error(f"Image generation stderr: {result.stderr}")
 
 		# Handle exit codes
 		if result.returncode == 0:

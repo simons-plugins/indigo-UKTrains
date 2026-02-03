@@ -184,10 +184,10 @@ try:
     y = 0
     stationName = stationTitles
     draw.text((leftpadding, y), stationName, ticolour, font=titleFont)
-    y += line_height+15
+    y += line_height + 15
     stationStats = stationStatistics
     draw.text((leftpadding, y), stationStats, cpcolour, font=statusFont)
-    y += line_height
+    y += line_height + 10  # Extra spacing before column headers
     currentService = 0
     maxLines = 35
     maxServices = 5
@@ -200,9 +200,9 @@ try:
         if 'Destination' in line:
 
             # Column titles in cyan
-            y += int(line_height*0.5)
+            y += int(line_height * 0.8)  # More spacing before headers
             draw.text((leftpadding, y), line, cpcolour, font=departFont)
-            y += line_height
+            y += line_height + 3  # Extra spacing after headers
 
         elif len(line) == 0:
             # Blank line
@@ -220,8 +220,9 @@ try:
             y += int(line_height*0.5)
 
         elif 'Status' in line:
+            # Status/delay information
             draw.text((leftpadding, y), line, ticolour, font=delayFont)
-            # y += line_height
+            y += int(line_height * 0.8)  # Add spacing after status line
 
         elif '>' not in line:
             if noMoreTrains:
@@ -239,16 +240,16 @@ try:
             else:
                 draw.text((leftpadding, y), line, isscolour, font=departFont)
 
-            y += line_height+5
+            y += line_height + 5
 
             currentService += 1
             if currentService > maxServices:
                 # Only five services per board
                 noMoreTrains = True
         else:
-            # Calling points
-            draw.text((leftpadding + 5, y), line.replace('>',' '), cpcolour, font=callingFont)
-            y += line_height
+            # Calling points - add extra spacing for readability
+            draw.text((leftpadding + 5, y), line.replace('>', ' '), cpcolour, font=callingFont)
+            y += int(line_height * 1.1)  # More spacing after calling points
 
     # Save PNG with optimization
     try:
