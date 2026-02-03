@@ -27,12 +27,12 @@ def compute_board_content_hash(
 ) -> str:
 	"""Compute SHA-256 hash of departure board content and rendering parameters.
 
-	Includes all inputs that affect visual output: board text and color scheme.
-	Any change to either component produces a different hash.
+	Includes all inputs that affect visual output: board text, colors, font size,
+	padding, and width. Any change to these parameters produces a different hash.
 
 	Args:
 		board_text_path: Path to departure board text file
-		parameters_file_path: Path to trainparameters.txt containing color config
+		parameters_file_path: Path to trainparameters.txt with all rendering params
 
 	Returns:
 		Lowercase hex-encoded SHA-256 hash (64 characters)
@@ -44,13 +44,12 @@ def compute_board_content_hash(
 		board_content = f.read()
 	hasher.update(board_content.encode('utf-8'))
 
-	# Hash color parameters from parameters file
-	# File format: 'fg,bg,issue,title,calling_points,9,3,3,720'
-	# We hash the first 5 comma-separated values (the colors)
+	# Hash all rendering parameters from parameters file
+	# File format: 'fg,bg,issue,title,calling_points,fontsize,leftpad,rightpad,width'
+	# Hash the entire line since all parameters affect visual output
 	with open(parameters_file_path, 'r', encoding='utf-8') as f:
 		params_content = f.read().strip()
-	color_values = ','.join(params_content.split(',')[:5])
-	hasher.update(color_values.encode('utf-8'))
+	hasher.update(params_content.encode('utf-8'))
 
 	return hasher.hexdigest()
 
