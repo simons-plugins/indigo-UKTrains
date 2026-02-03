@@ -255,25 +255,34 @@ def _append_train_to_image(
 	if include_calling_points and service:
 		cp_string = _build_calling_points_string(service)
 		if len(cp_string) > 0:
-			# Split long calling points into multiple lines
+			# Split long calling points into multiple lines at station boundaries
 			if len(cp_string) <= word_length:
-				# No need to split
-				image_content.append('>>> ' + cp_string)
+				# No need to split - add as single line
+				image_content.append('>>> ' + cp_string.strip())
 			else:
-				# Split at word boundaries
-				remaining = cp_string
-				while len(remaining) > word_length:
-					cut_point = remaining.find(')', word_length - 1)
-					if cut_point != -1:
-						image_content.append('>>> ' + remaining[:cut_point + 1])
-						remaining = remaining[cut_point + 1:].lstrip()
-					else:
-						# No closing paren found, just break
+				# Split at station boundaries (after closing paren + space)
+				remaining = cp_string.strip()
+				while len(remaining) > 0:
+					if len(remaining) <= word_length:
+						# Remaining text fits on one line
+						image_content.append('>>> ' + remaining)
 						break
 
-				# Add remaining text
-				if len(remaining.strip()) != 0:
-					image_content.append('>>> ' + remaining)
+					# Find last complete station entry that fits
+					cut_point = -1
+					for i in range(word_length - 1, 0, -1):
+						if remaining[i] == ')' and i + 1 < len(remaining) and remaining[i + 1] == ' ':
+							cut_point = i + 1
+							break
+
+					if cut_point > 0:
+						# Found a good split point
+						image_content.append('>>> ' + remaining[:cut_point].strip())
+						remaining = remaining[cut_point:].lstrip()
+					else:
+						# No good split point found, take what we can
+						image_content.append('>>> ' + remaining[:word_length].strip())
+						remaining = remaining[word_length:].lstrip()
 
 
 def _format_station_board(
