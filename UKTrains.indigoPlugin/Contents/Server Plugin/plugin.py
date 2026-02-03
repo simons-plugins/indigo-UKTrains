@@ -353,7 +353,7 @@ def routeUpdate(dev, apiAccess, networkrailURL, paths, logger):
 
 	# Process special messages and format board
 	special_messages = _process_special_messages(stationBoardDetails, dev, testing_mode=False)
-	board_titles = f"Departures - {station_name} {via_station}{' ' * 60}"[:60] + '\n'
+	board_titles = f"Departures - {station_name} {via_station}\n"
 	board_stats = f'Generated on:{time_generated}\n'
 	station_board = _format_station_board(
 		image_content,
