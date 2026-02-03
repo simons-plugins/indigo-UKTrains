@@ -250,7 +250,8 @@ from image_generator import (
 	_write_departure_board_text,
 	_generate_departure_image,
 	_append_train_to_image,
-	_format_station_board
+	_format_station_board,
+	compute_board_content_hash,
 )
 
 
@@ -278,7 +279,7 @@ from image_generator import (
 # _format_station_board moved to image_generator.py
 
 
-def routeUpdate(dev, apiAccess, networkrailURL, paths):
+def routeUpdate(dev, apiAccess, networkrailURL, paths, logger):
 	"""
 	Update train departure device with latest information from Darwin API.
 
@@ -287,6 +288,7 @@ def routeUpdate(dev, apiAccess, networkrailURL, paths):
 		apiAccess: Darwin API key
 		networkrailURL: Darwin WSDL URL
 		paths: PluginPaths object with all file paths
+		logger: Plugin logger for error reporting
 
 	Returns:
 		True if update successful, False otherwise
@@ -351,7 +353,7 @@ def routeUpdate(dev, apiAccess, networkrailURL, paths):
 
 	# Process special messages and format board
 	special_messages = _process_special_messages(stationBoardDetails, dev, testing_mode=False)
-	board_titles = f"Departures - {station_name} {via_station}{' ' * 60}"[:60] + '\n'
+	board_titles = f"Departures - {station_name} {via_station}\n"
 	board_stats = f'Generated on:{time_generated}\n'
 	station_board = _format_station_board(
 		image_content,
@@ -374,16 +376,41 @@ def routeUpdate(dev, apiAccess, networkrailURL, paths):
 		board_content=station_board
 	)
 
-	# Generate PNG image from text file
-	indigo.debugger()
+	# Check if image regeneration needed using content hash
 	parameters_file = paths.get_parameters_file()
-	_generate_departure_image(
-		paths.plugin_root,
-		image_filename,
-		train_text_file,
-		parameters_file,
-		departures_available=departures_found
-	)
+	current_hash = compute_board_content_hash(train_text_file, parameters_file)
+	previous_hash = dev.states.get('image_content_hash', '')
+
+	# Log hash comparison for debugging
+	if logger:
+		if previous_hash:
+			logger.debug(f"Content hash for '{dev.name}': prev={previous_hash[:16]}... curr={current_hash[:16]}...")
+		else:
+			logger.debug(f"No previous hash for '{dev.name}' (first generation)")
+
+	if current_hash != previous_hash:
+		# Content changed - regenerate image
+		logger.info(f"Board content changed for '{dev.name}', regenerating image")
+
+		image_success = _generate_departure_image(
+			paths.plugin_root,
+			image_filename,
+			train_text_file,
+			parameters_file,
+			departures_available=departures_found,
+			device=dev,
+			logger=logger
+		)
+
+		if image_success:
+			# Update hash only after successful generation
+			dev.updateStateOnServer('image_content_hash', current_hash)
+			logger.debug(f"Updated content hash for '{dev.name}'")
+		else:
+			logger.error(f"Image generation failed for '{dev.name}', will retry next cycle")
+	else:
+		# Content unchanged - skip generation
+		logger.debug(f"Board content unchanged for '{dev.name}', skipping image generation")
 
 	return True
 
@@ -801,7 +828,7 @@ class Plugin(indigo.PluginBase):
 					dev.updateStateOnServer('destinationCRS',value = dev.pluginProps['destinationCode'])
 
 					# Update the device with the latest information
-					deviceRefresh = routeUpdate(dev, runtime_config.api_key, runtime_config.darwin_url, self.paths)
+					deviceRefresh = routeUpdate(dev, runtime_config.api_key, runtime_config.darwin_url, self.paths, self.plugin_logger)
 
 					if not deviceRefresh:
 						# Update failed - probably due to SOAP server timeout
@@ -944,196 +971,3 @@ class Plugin(indigo.PluginBase):
 			self.logger.info("Turning on debug logging")
 			self.pluginPrefs["showDebugInfo"] = True
 		self.debug = not self.debug
-
-
-def text2png(imageFileName, trainTextFile, parametersFileName, departuresAvailable):
-	# Import the graphic conversion files
-	try:
-		import PIL
-	except ImportError as e:
-		print(f"** PILLOW or PIL must be installed: {e} - please see forum for details")
-		sys.exit(21)
-
-	# Now get the key modules we're using on this occasion
-	from PIL import ImageFont
-	from PIL import Image
-	from PIL import ImageDraw
-
-	# Get the current python path for text files
-	pypath = os.path.realpath(sys.path[0]) + '/'
-	# Get the passed parameters in the command line
-
-	# Debug logging removed - this is a subprocess
-	# Use subprocess output files instead
-
-	if 'YES' in departuresAvailable:
-		trainsFound = True
-	else:
-		trainsFound = False
-
-	# Extract the standard parameters for the image from file
-	# This file is used to communication between Indigo and this independant process
-	# File format is:
-	#   forcolour, bgcolour, isscolour, ticolour, cpcoloour, fontFullpath, fontFullPathTitle, fontSize,leftpadding,
-	#   rightpadding, width, trainsfound, imageFileName, sourceDataName
-
-	with open(parametersFileName, 'r') as f:
-		parameterSplit = f.readline().split(',')
-	forcolour = parameterSplit[0]
-	bgcolour = parameterSplit[1]
-	isscolour = parameterSplit[2]
-	ticolour = parameterSplit[3]
-	cpcolour = parameterSplit[4]
-	fontsize = int(parameterSplit[5])
-	leftpadding = int(parameterSplit[6])
-	rightpadding = int(parameterSplit[7])
-	width = int(parameterSplit[8])
-
-	# Ok now we need to extract the station for the departure board
-	# Extract station and route timetable information
-
-	try:
-		with open(trainTextFile, 'r') as routeInfo:
-			stationTitles = routeInfo.readline()
-			stationStatistics = routeInfo.readline()
-
-			timeTable = ''
-			for line in routeInfo:
-				timeTable = timeTable + '\n' + line.rstrip('\n')
-	except (IOError, OSError) as e:
-		print(f"Something wrong with the text file {trainTextFile}: {e}")
-		sys.exit(22)
-
-	# Converts timeTable array into a departure board image for display
-	# Work out formatting characters
-	REPLACEMENT_CHARACTER = 'ZZFZ'
-	NEWLINE_REPLACEMENT_STRING = ' ' + REPLACEMENT_CHARACTER + ' '
-
-	# Get the fonts for the board
-	fontFullPath = pypath + 'BoardFonts/MFonts/Lekton-Bold.ttf'  # Regular
-	fontFullPathTitle = pypath + 'BoardFonts/MFonts/sui generis rg.ttf'  # Bold Title
-	fontCallingPoints = pypath + 'BoardFonts/MFonts/Hack-RegularOblique.ttf'  # Italic
-
-	# Get the font for the image.  Must be a mono-spaced font for accuracy
-	font = ImageFont.load_default() if fontFullPath is None else ImageFont.truetype(fontFullPath, fontsize + 4)
-	titleFont = ImageFont.load_default() if fontFullPathTitle is None else ImageFont.truetype(fontFullPathTitle, fontsize + 12)
-	statusFont = ImageFont.load_default() if fontFullPath is None else ImageFont.truetype(fontFullPath, fontsize + 5)
-	departFont = ImageFont.load_default() if fontFullPathTitle is None else ImageFont.truetype(fontFullPath, fontsize + 8)
-	delayFont = ImageFont.load_default() if fontFullPath is None else ImageFont.truetype(fontFullPath, fontsize + 4)
-	callingFont = ImageFont.load_default() if fontFullPath is None else ImageFont.truetype(fontCallingPoints, fontsize + 2)
-	messagesFont = ImageFont.load_default() if fontFullPath is None else ImageFont.truetype(fontCallingPoints, fontsize)
-
-	# Calculate image size
-	timeTable = timeTable.replace('\n', NEWLINE_REPLACEMENT_STRING)
-	lines = []
-	line = ""
-
-	for word in timeTable.split():
-		# Check to see if the word is longer than the possible size of image
-		if word == REPLACEMENT_CHARACTER:  # give a blank line
-			lines.append(line[1:].replace('-', ' '))  # slice the white space in the begining of the line
-			line = ""
-		# lines.append( "" ) #the blank line
-
-		elif '++' in line:
-			# This is a status line and can be longer
-			# Width is controlled in the main plugin
-			line += ' ' + word
-
-		elif font.getsize(line + ' ' + word)[0] <= (width - rightpadding - leftpadding):
-			line += ' ' + word
-
-		else:  # start a new line because the word is longer than a line
-			# Line splitting now managed in main code
-			continue
-
-	if len(line) != 0:
-		lines.append(line[1:])  # add the last line
-
-	# Calculate image proportions
-	line_height = font.getsize(timeTable)[1]
-	img_height = line_height * (30)
-	line_height = int(line_height / 1.5 + 0.5)
-
-	if not trainsFound:
-		img_height = line_height * (30)
-
-	# Draw the blank image
-	img = Image.new("RGBA", (width, img_height), bgcolour)
-	draw = ImageDraw.Draw(img)
-
-	# Extract the station details
-	# Remove the char returns
-	titleLines = stationTitles.replace('\n', NEWLINE_REPLACEMENT_STRING)
-	statsLines = stationStatistics.replace('\n', NEWLINE_REPLACEMENT_STRING)
-
-	# Draw the titles in Cyan in title font
-	y = 0
-	stationName = stationTitles
-	draw.text((leftpadding, y), stationName, ticolour, font=titleFont)
-	y += line_height + 15
-	stationStats = stationStatistics
-	draw.text((leftpadding, y), stationStats, cpcolour, font=statusFont)
-	y += line_height
-	currentService = 0
-	maxLines = 35
-	maxServices = 5
-	noMoreTrains = False
-
-	# Now add the content
-	for line in lines:
-
-		# Is this the titles line for the columns?
-		if 'Destination' in line:
-
-			# Column titles in cyan
-			y += int(line_height * 0.5)
-			draw.text((leftpadding, y), line, cpcolour, font=departFont)
-			y += line_height
-
-		elif len(line) == 0:
-			# Blank line
-			y += (line_height / 2 + 0.5)
-			pass
-
-		elif '**' in line:
-			# No trains found message
-			draw.text((leftpadding + 10, y), line, isscolour, font=statusFont)
-			y += line_height * 1.2
-
-		elif '++' in line:
-			# Station Messages found
-			draw.text((leftpadding+10, y), line.replace('+',''), isscolour, font=messagesFont)
-			y += int(line_height * 0.5)
-
-		elif 'Status' in line:
-			draw.text((leftpadding, y), line, ticolour, font=delayFont)
-		# y += line_height
-
-		elif '>' not in line:
-			if noMoreTrains:
-				# Don't process this one onwards
-				break
-
-			# Draw a destination with details
-			if constants.TrainStatus.ON_TIME.value in line:
-				# Train is running on time
-				draw.text((leftpadding, y), line, forcolour, font=departFont)
-
-			elif 'Special' in line:
-				draw.text((leftpadding, y), line, forcolour, font=callingFont)
-
-			else:
-				draw.text((leftpadding, y), line, isscolour, font=departFont)
-
-			y += line_height + 5
-
-			currentService += 1
-			if currentService > maxServices:
-				# Only five services per board
-				noMoreTrains = True
-		else:
-			# Calling points
-			draw.text((leftpadding + 5, y), line.replace('>', ' '), cpcolour, font=callingFont)
-			y += line_height
-	img1 = img.save(imageFileName, 'png')

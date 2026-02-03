@@ -53,8 +53,11 @@ ERROR_LOG_FILENAME = 'UKTrainsErrors.log'
 IMAGE_OUTPUT_LOG = 'myImageOutput.txt'
 IMAGE_ERROR_LOG = 'myImageErrors.txt'
 
-# Python executable path - use currently running interpreter
-PYTHON3_PATH = sys.executable
+# Python executable path - use system Python 3
+# NOTE: sys.executable points to IndigoPluginHost3, not Python!
+# Indigo plugins run inside IndigoPluginHost3.app wrapper
+# Must use actual Python 3 interpreter for subprocess calls
+PYTHON3_PATH = '/Library/Frameworks/Python.framework/Versions/Current/bin/python3'
 
 # Special status strings
 class TrainStatus(Enum):

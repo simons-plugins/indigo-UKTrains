@@ -108,6 +108,24 @@
 				<TriggerLabel>Station Problems</TriggerLabel>
 				<ControlPageLabel>Station Problems</ControlPageLabel>
 			</State>
+			<State id="imageGenerationStatus"
+				   readonly="YES">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Image Generation Status</TriggerLabel>
+				<ControlPageLabel>Image Status</ControlPageLabel>
+			</State>
+		<State id="imageGenerationError"
+			   readonly="YES">
+			<ValueType>String</ValueType>
+			<TriggerLabel>Image Generation Error</TriggerLabel>
+			<ControlPageLabel>Image Error</ControlPageLabel>
+		</State>
+			<State id="image_content_hash"
+				   readonly="YES">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Image Content Hash</TriggerLabel>
+				<ControlPageLabel>Content Hash</ControlPageLabel>
+			</State>
 			<State id="train1Dest"
 				   readonly="YES">
 				<ValueType>String</ValueType>

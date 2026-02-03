@@ -7,6 +7,7 @@ Handles text file writing and subprocess spawning for PNG generation.
 from pathlib import Path
 import subprocess
 from typing import List, Optional, Any
+import hashlib
 import constants
 from text_formatter import delayCalc
 
@@ -18,6 +19,39 @@ def errorHandler(error_msg: str):
 	"""
 	import sys
 	print(f"ERROR: {error_msg}", file=sys.stderr)
+
+
+def compute_board_content_hash(
+	board_text_path: Path,
+	parameters_file_path: Path
+) -> str:
+	"""Compute SHA-256 hash of departure board content and rendering parameters.
+
+	Includes all inputs that affect visual output: board text, colors, font size,
+	padding, and width. Any change to these parameters produces a different hash.
+
+	Args:
+		board_text_path: Path to departure board text file
+		parameters_file_path: Path to trainparameters.txt with all rendering params
+
+	Returns:
+		Lowercase hex-encoded SHA-256 hash (64 characters)
+	"""
+	hasher = hashlib.sha256()
+
+	# Hash departure board text content
+	with open(board_text_path, 'r', encoding='utf-8') as f:
+		board_content = f.read()
+	hasher.update(board_content.encode('utf-8'))
+
+	# Hash all rendering parameters from parameters file
+	# File format: 'fg,bg,issue,title,calling_points,fontsize,leftpad,rightpad,width'
+	# Hash the entire line since all parameters affect visual output
+	with open(parameters_file_path, 'r', encoding='utf-8') as f:
+		params_content = f.read().strip()
+	hasher.update(params_content.encode('utf-8'))
+
+	return hasher.hexdigest()
 
 
 def _write_departure_board_text(
@@ -54,9 +88,17 @@ def _generate_departure_image(
 	image_filename: Path,
 	text_filename: Path,
 	parameters_filename: Path,
-	departures_available: bool
-) -> subprocess.CompletedProcess:
+	departures_available: bool,
+	device,
+	logger
+) -> bool:
 	"""Launch subprocess to generate PNG image from text file.
+
+	Handles text2png.py exit codes:
+		0 = Success
+		1 = File I/O error (read/write failures)
+		2 = PIL/Pillow error (font loading, image creation)
+		3 = Other error (arguments, configuration)
 
 	Args:
 		plugin_root: Path to plugin root directory (Path object)
@@ -64,29 +106,109 @@ def _generate_departure_image(
 		text_filename: Path to input text file (Path object)
 		parameters_filename: Path to parameters configuration file (Path object)
 		departures_available: Boolean indicating if departures exist
+		device: Indigo device object for state updates
+		logger: Plugin logger for error reporting
 
 	Returns:
-		subprocess.CompletedProcess result
+		True if image generated successfully, False otherwise
 	"""
 	dep_flag = 'YES' if departures_available else 'NO'
 
-	# Use Path objects for subprocess files
-	output_log = plugin_root / constants.IMAGE_OUTPUT_LOG
-	error_log = plugin_root / constants.IMAGE_ERROR_LOG
+	cmd = [
+		constants.PYTHON3_PATH,
+		str(plugin_root / 'text2png.py'),
+		str(image_filename),
+		str(text_filename),
+		str(parameters_filename),
+		dep_flag
+	]
 
-	with open(output_log, 'w') as output_file, \
-	     open(error_log, 'w') as error_file:
+	# Log command for debugging (can be removed after confirming stable)
+	logger.debug(f"Generating image: {image_filename.name}")
+
+	try:
 		result = subprocess.run(
-			[constants.PYTHON3_PATH,
-			 str(plugin_root / 'text2png.py'),
-			 str(image_filename),
-			 str(text_filename),
-			 str(parameters_filename),
-			 dep_flag],
-			stdout=output_file,
-			stderr=error_file
+			cmd,
+			capture_output=True,  # Capture both stdout and stderr
+			text=True,            # Decode as strings
+			timeout=10,           # 10-second timeout for image generation
+			check=False           # Handle exit codes manually
 		)
-	return result
+
+		# Log subprocess errors only
+		if result.stderr:
+			logger.error(f"Image generation stderr: {result.stderr}")
+
+		# Handle exit codes
+		if result.returncode == 0:
+			# Success
+			logger.debug(f"Image generated successfully for '{device.name}'")
+			device.updateStateOnServer('imageGenerationStatus', 'success')
+			device.updateStateOnServer('imageGenerationError', '')
+			return True
+
+		elif result.returncode == 1:
+			# File I/O error
+			error_msg = "File I/O error: cannot read input files or write PNG"
+			logger.error(f"{error_msg} for device '{device.name}'")
+			if result.stderr:
+				logger.error(f"Details: {result.stderr}")
+			device.updateStateOnServer('imageGenerationStatus', 'failed')
+			device.updateStateOnServer('imageGenerationError', error_msg)
+			return False
+
+		elif result.returncode == 2:
+			# PIL/Pillow error
+			error_msg = "PIL error: font loading or image creation failed"
+			logger.error(f"{error_msg} for device '{device.name}'")
+			if result.stderr:
+				logger.error(f"Details: {result.stderr}")
+			device.updateStateOnServer('imageGenerationStatus', 'failed')
+			device.updateStateOnServer('imageGenerationError', error_msg)
+			return False
+
+		elif result.returncode == 3:
+			# Other error (arguments, configuration)
+			error_msg = "Configuration error in image generation"
+			logger.error(f"{error_msg} for device '{device.name}'")
+			if result.stderr:
+				logger.error(f"Details: {result.stderr}")
+			device.updateStateOnServer('imageGenerationStatus', 'failed')
+			device.updateStateOnServer('imageGenerationError', error_msg)
+			return False
+
+		else:
+			# Unknown exit code
+			error_msg = f"Unknown error (exit code {result.returncode})"
+			logger.error(f"{error_msg} for device '{device.name}'")
+			if result.stderr:
+				logger.error(f"Details: {result.stderr}")
+			device.updateStateOnServer('imageGenerationStatus', 'failed')
+			device.updateStateOnServer('imageGenerationError', error_msg)
+			return False
+
+	except subprocess.TimeoutExpired as e:
+		error_msg = "Timeout after 10 seconds"
+		logger.error(f"Image generation timed out for device '{device.name}'")
+		if e.stderr:
+			logger.error(f"stderr before timeout: {e.stderr}")
+		device.updateStateOnServer('imageGenerationStatus', 'timeout')
+		device.updateStateOnServer('imageGenerationError', error_msg)
+		return False
+
+	except FileNotFoundError:
+		error_msg = f"Python interpreter not found: {constants.PYTHON3_PATH}"
+		logger.error(error_msg)
+		device.updateStateOnServer('imageGenerationStatus', 'config_error')
+		device.updateStateOnServer('imageGenerationError', error_msg)
+		return False
+
+	except Exception as e:
+		error_msg = f"Unexpected error: {str(e)}"
+		logger.exception(f"Unexpected error generating image for device '{device.name}'")
+		device.updateStateOnServer('imageGenerationStatus', 'error')
+		device.updateStateOnServer('imageGenerationError', error_msg)
+		return False
 
 
 def _append_train_to_image(
@@ -132,25 +254,37 @@ def _append_train_to_image(
 	if include_calling_points and service:
 		cp_string = _build_calling_points_string(service)
 		if len(cp_string) > 0:
-			# Split long calling points into multiple lines
-			if len(cp_string) <= word_length:
-				# No need to split
-				image_content.append('>>> ' + cp_string)
+			# Guard against invalid word_length to prevent infinite loops
+			safe_word_length = max(20, word_length)  # Minimum 20 chars for safety
+
+			# Split long calling points into multiple lines at station boundaries
+			if len(cp_string) <= safe_word_length:
+				# No need to split - add as single line
+				image_content.append('>>> ' + cp_string.strip())
 			else:
-				# Split at word boundaries
-				remaining = cp_string
-				while len(remaining) > word_length:
-					cut_point = remaining.find(')', word_length - 1)
-					if cut_point != -1:
-						image_content.append('>>> ' + remaining[:cut_point + 1])
-						remaining = remaining[cut_point + 1:].lstrip()
-					else:
-						# No closing paren found, just break
+				# Split at station boundaries (after closing paren + space)
+				remaining = cp_string.strip()
+				while len(remaining) > 0:
+					if len(remaining) <= safe_word_length:
+						# Remaining text fits on one line
+						image_content.append('>>> ' + remaining)
 						break
 
-				# Add remaining text
-				if len(remaining.strip()) != 0:
-					image_content.append('>>> ' + remaining)
+					# Find last complete station entry that fits
+					cut_point = -1
+					for i in range(safe_word_length - 1, 0, -1):
+						if remaining[i] == ')' and i + 1 < len(remaining) and remaining[i + 1] == ' ':
+							cut_point = i + 1
+							break
+
+					if cut_point > 0:
+						# Found a good split point
+						image_content.append('>>> ' + remaining[:cut_point].strip())
+						remaining = remaining[cut_point:].lstrip()
+					else:
+						# No good split point found, take what we can
+						image_content.append('>>> ' + remaining[:safe_word_length].strip())
+						remaining = remaining[safe_word_length:].lstrip()
 
 
 def _format_station_board(
