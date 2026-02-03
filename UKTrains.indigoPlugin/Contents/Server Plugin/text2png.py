@@ -219,6 +219,11 @@ try:
             draw.text((leftpadding+10, y), line.replace('+',''), isscolour, font=messagesFont)
             y += int(line_height*0.5)
 
+        elif 'Generated on:' in line:
+            # Timestamp header - match styling with "Departures" line
+            draw.text((leftpadding, y), line, cpcolour, font=statusFont)
+            y += int(line_height * 0.9)  # Spacing after timestamp
+
         elif 'Status' in line:
             # Status/delay information
             draw.text((leftpadding, y), line, ticolour, font=delayFont)
