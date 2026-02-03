@@ -254,22 +254,25 @@ def _append_train_to_image(
 	if include_calling_points and service:
 		cp_string = _build_calling_points_string(service)
 		if len(cp_string) > 0:
+			# Guard against invalid word_length to prevent infinite loops
+			safe_word_length = max(20, word_length)  # Minimum 20 chars for safety
+
 			# Split long calling points into multiple lines at station boundaries
-			if len(cp_string) <= word_length:
+			if len(cp_string) <= safe_word_length:
 				# No need to split - add as single line
 				image_content.append('>>> ' + cp_string.strip())
 			else:
 				# Split at station boundaries (after closing paren + space)
 				remaining = cp_string.strip()
 				while len(remaining) > 0:
-					if len(remaining) <= word_length:
+					if len(remaining) <= safe_word_length:
 						# Remaining text fits on one line
 						image_content.append('>>> ' + remaining)
 						break
 
 					# Find last complete station entry that fits
 					cut_point = -1
-					for i in range(word_length - 1, 0, -1):
+					for i in range(safe_word_length - 1, 0, -1):
 						if remaining[i] == ')' and i + 1 < len(remaining) and remaining[i + 1] == ' ':
 							cut_point = i + 1
 							break
@@ -280,8 +283,8 @@ def _append_train_to_image(
 						remaining = remaining[cut_point:].lstrip()
 					else:
 						# No good split point found, take what we can
-						image_content.append('>>> ' + remaining[:word_length].strip())
-						remaining = remaining[word_length:].lstrip()
+						image_content.append('>>> ' + remaining[:safe_word_length].strip())
+						remaining = remaining[safe_word_length:].lstrip()
 
 
 def _format_station_board(
