@@ -304,8 +304,8 @@
 			<State id="train4Op"
 				   readonly="YES">
 				<ValueType>String</ValueType>
-				<TriggerLabel>Operator Train 1</TriggerLabel>
-				<ControlPageLabel>Operator Train 1</ControlPageLabel>
+				<TriggerLabel>Operator Train 4</TriggerLabel>
+				<ControlPageLabel>Operator Train 4</ControlPageLabel>
 			</State>
 			<State id="train4Est"
 				   readonly="YES">
