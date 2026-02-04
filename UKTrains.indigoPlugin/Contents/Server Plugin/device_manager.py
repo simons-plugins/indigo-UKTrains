@@ -30,12 +30,14 @@ def _clear_device_states(dev: Any) -> None:
 	for trainNum in range(1, constants.MAX_TRAINS_TRACKED + 1):
 		train_prefix = f'train{trainNum}'
 		dev.updateStateOnServer(f'{train_prefix}Dest', value='')
+		dev.updateStateOnServer(f'{train_prefix}Op', value='')
 		dev.updateStateOnServer(f'{train_prefix}Sch', value='')
 		dev.updateStateOnServer(f'{train_prefix}Est', value='')
 		dev.updateStateOnServer(f'{train_prefix}Delay', value='')
 		dev.updateStateOnServer(f'{train_prefix}Issue', value=False)
 		dev.updateStateOnServer(f'{train_prefix}Reason', value='')
 		dev.updateStateOnServer(f'{train_prefix}Calling', value='')
+		dev.updateStateOnServer(f'{train_prefix}Platform', value='')
 
 	# Clear station issues flag
 	dev.updateStateOnServer('stationIssues', value=False)
@@ -158,12 +160,14 @@ def _update_train_device_states(
 	dest_std = getattr(destination, 'std', '00:00')
 	dest_etd = getattr(destination, 'etd', '00:00')
 	dest_operator = getattr(destination, 'operator_name', 'Unknown')
+	dest_platform = getattr(destination, 'platform', '')  # Platform number (may be None/empty)
 
 	# Update basic states
 	dev.updateStateOnServer(f'{train_prefix}Dest', value=dest_text)
 	dev.updateStateOnServer(f'{train_prefix}Op', value=dest_operator)
 	dev.updateStateOnServer(f'{train_prefix}Sch', value=dest_std)
 	dev.updateStateOnServer(f'{train_prefix}Est', value=dest_etd)
+	dev.updateStateOnServer(f'{train_prefix}Platform', value=dest_platform if dest_platform else '')
 
 	# Calculate and update delay
 	has_problem, delay_msg = delayCalc(dest_std, dest_etd)

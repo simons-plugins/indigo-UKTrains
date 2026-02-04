@@ -61,6 +61,146 @@ This is an Indigo plugin packaged as a `.indigoPlugin` bundle with the following
 - **Station Issues Flag**: Aggregated boolean indicating if any trains on the route have delays/cancellations
 - **Calling Points**: Intermediate stops between origin and destination, optionally displayed
 
+## Dual-Style Departure Boards (v2025.1.6+)
+
+### Overview
+
+The plugin supports generating **two departure board styles simultaneously**:
+
+1. **Classic Style**: 720×400px landscape (retro green terminal aesthetic for dashboards)
+   - File: `{station}_departure_board.png`
+   - Renderer: `text2png.py` (original)
+   - Colors: Green on black, retro terminal style
+
+2. **Modern Style**: 414×variable portrait (mobile-optimized for messaging apps)
+   - File: `{station}_departure_board_mobile.png`
+   - Renderer: `text2png_modern.py` (new)
+   - Colors: Dark theme with WCAG AA accessible colors
+   - Layout: Card-based with rounded corners
+
+### Configuration
+
+Plugin preferences (PluginConfig.xml) provide two checkboxes:
+- ✅ **Generate Classic Board Image** (default: enabled)
+- ☐ **Generate Modern Board Image** (default: disabled)
+
+Both can be enabled simultaneously to generate both styles with different filenames.
+
+### Implementation Architecture
+
+**Key Files**:
+- `text2png.py`: Dispatches to appropriate renderer based on `boardStyle` parameter
+- `text2png_modern.py`: Modern card-based renderer (new)
+- `image_generator.py`: Coordinates subprocess calls for image generation
+- `constants.py`: Defines color schemes and dimensions for both styles
+
+**Call Chain**:
+```
+Plugin.runConcurrentThread()
+  → routeUpdate(dev, ..., plugin_prefs=self.pluginPrefs)
+    → _generate_departure_image(..., plugin_prefs=plugin_prefs)
+      → _generate_single_image(..., board_style='classic'|'modern')
+        → subprocess: text2png.py → text2png_modern.py (if modern)
+```
+
+### Text File Format Parsing
+
+Departure board data is written to text files using **dash-padded format**:
+
+```
+London Waterloo------------------- 17:09-----On time---South Western Railway
+Status:On time
+
+>>> Surbiton(17:15) Clapham Junction(17:27) London Waterloo(17:36)
+```
+
+**Format Structure**:
+- **Service line**: `Destination-------Time-----Status---Operator`
+  - Fields separated by 3+ consecutive dashes
+  - Spaces within fields preserved
+- **Status line**: `Status:` prefix followed by status text
+- **Calling points**: `>>>` prefix, station names with times in parentheses
+
+**Parsing Logic** (`parse_service_data()` in `text2png_modern.py`):
+1. Split service lines on runs of 3+ dashes: `re.split(r'-{3,}', line)`
+2. Extract: destination, scheduled time, estimated time, operator
+3. Status lines override the estimated time field
+4. Calling points lines are concatenated (may span multiple lines)
+
+### Plugin Preferences vs Device Properties
+
+**Critical Distinction**:
+- **Plugin preferences** (`self.pluginPrefs`): Plugin-wide settings from `PluginConfig.xml`
+  - Accessed via `self.pluginPrefs.get('generateClassicBoard', True)` in Plugin class
+  - Must be passed as parameters to module-level functions
+- **Device properties** (`device.pluginProps`): Device-specific settings from `Devices.xml`
+  - Accessed via `device.pluginProps.get('includeCalling', False)`
+
+**Common Mistake**: Trying to access plugin preferences from device object:
+```python
+# WRONG ❌
+generate_modern = device.pluginProps.get('generateModernBoard', False)  # Always returns False
+
+# CORRECT ✅
+generate_modern = self.pluginPrefs.get('generateModernBoard', False)    # From Plugin class
+generate_modern = plugin_prefs.get('generateModernBoard', False)        # From module function
+```
+
+### Modern Board Design Specifications
+
+**Dimensions**:
+- Width: 414px (iPhone 15 Pro Max standard)
+- Height: Dynamic based on content (600-900px typical)
+- Card height: 120px per service + 12px spacing
+
+**Color Scheme** (WCAG AA compliant):
+- Background: `#1A1D29` (dark blue-grey)
+- Cards: `#252938` (elevated surface)
+- On time: `#00C853` (green, 4.7:1 contrast)
+- Delayed: `#FF6B00` (orange, 5.3:1 contrast)
+- Cancelled: `#F44336` (red, 4.9:1 contrast)
+
+**Typography** (Hack font family):
+- Station name: 26pt Bold
+- Destination: 18pt Bold
+- Platform: 20pt Bold
+- Times: 16pt Regular
+- Status: 14pt Bold
+- Operator: 12pt Regular
+- Calling points: 11pt RegularOblique
+
+### Troubleshooting
+
+**Issue**: Modern board shows "No trains" but classic board has trains
+**Cause**: Text parsing failed to extract service data
+**Solution**:
+1. Check text file format in `/Volumes/simon/Documents/iTravel/{station}departureBoard.txt`
+2. Verify dash-padded format (not comma-separated)
+3. Check Indigo log for parsing warnings
+4. Ensure `text2png_modern.py` uses correct regex: `r'-{3,}'`
+
+**Issue**: Modern board not generated despite checkbox enabled
+**Cause**: Plugin preferences not passed through call chain
+**Solution**: Verify `routeUpdate()` receives `plugin_prefs=self.pluginPrefs` parameter
+
+**Issue**: Both checkboxes checked but only one image generated
+**Cause**: One renderer failed silently
+**Solution**: Check Indigo log for subprocess errors (exit codes 1=IO, 2=PIL, 3=config)
+
+### File Naming Convention
+
+```
+/Volumes/simon/Documents/iTravel/
+├── WALWATdepartureBoard.txt        # Text data (shared by both renderers)
+├── WALWATtimetable.png             # Classic: 720×400 landscape
+├── WALWATtimetable_mobile.png      # Modern: 414×variable portrait
+├── WATWALdepartureBoard.txt
+├── WATWALtimetable.png
+└── WATWALtimetable_mobile.png
+```
+
+**Suffix Pattern**: Modern images always end with `_mobile.png` to prevent conflicts.
+
 ## Development Commands
 
 ### Installation
