@@ -267,13 +267,13 @@
 			</State>
 			<State id="train3Issue"
 				   readonly="YES">
-				<ValueType>String</ValueType>
+				<ValueType>Boolean</ValueType>
 				<TriggerLabel>Issue with Train 3</TriggerLabel>
 				<ControlPageLabel>Train 3 issue</ControlPageLabel>
 			</State>
 			<State id="train3Reason"
 				   readonly="YES">
-				<ValueType>Boolean</ValueType>
+				<ValueType>String</ValueType>
 				<TriggerLabel>Reason for Delay Train 3</TriggerLabel>
 				<ControlPageLabel>Reason for Delay Train 3</ControlPageLabel>
 			</State>

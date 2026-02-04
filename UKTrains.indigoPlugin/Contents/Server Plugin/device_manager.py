@@ -30,6 +30,7 @@ def _clear_device_states(dev: Any) -> None:
 	for trainNum in range(1, constants.MAX_TRAINS_TRACKED + 1):
 		train_prefix = f'train{trainNum}'
 		dev.updateStateOnServer(f'{train_prefix}Dest', value='')
+		dev.updateStateOnServer(f'{train_prefix}Op', value='')
 		dev.updateStateOnServer(f'{train_prefix}Sch', value='')
 		dev.updateStateOnServer(f'{train_prefix}Est', value='')
 		dev.updateStateOnServer(f'{train_prefix}Delay', value='')

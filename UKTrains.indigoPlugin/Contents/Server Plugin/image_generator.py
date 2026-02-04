@@ -310,13 +310,30 @@ def _append_train_to_image(
 	dest_etd = getattr(destination, 'etd', '00:00')
 	operator_code = getattr(destination, 'operator_code', 'Unknown')
 	operator_name = getattr(destination, 'operator_name', 'Unknown')
-	dest_platform = getattr(destination, 'platform', '')  # Platform number (may be None/empty)
+
+	# Extract platform with logging for missing data
+	try:
+		dest_platform = destination.platform
+	except AttributeError:
+		# Destination object doesn't have platform attribute at all
+		import sys
+		print(f"WARNING: Destination object for '{dest_text}' missing platform attribute - Darwin API may have changed", file=sys.stderr)
+		dest_platform = None
 
 	# Calculate delay for display
 	has_problem, delay_msg = delayCalc(dest_std, dest_etd)
 
-	# Format platform for display (empty if not available)
-	platform_text = dest_platform if dest_platform else ''
+	# Format platform for display with conditional logging
+	if dest_platform is None or dest_platform == '':
+		platform_text = ''
+		# Log if platform missing during service hours (when platforms should be assigned)
+		import sys
+		import datetime
+		current_hour = datetime.datetime.now().hour
+		if 6 <= current_hour <= 23:  # Service hours 6am-11pm
+			print(f"DEBUG: No platform assigned for {dest_text} at {dest_std}", file=sys.stderr)
+	else:
+		platform_text = str(dest_platform)
 
 	# Format main service line (now includes platform)
 	if len(delay_msg.strip()) == 0:

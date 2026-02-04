@@ -65,18 +65,39 @@ FONT_SIZES = {
     'calling_points': 11
 }
 
+# Safety limits
+MAX_IMAGE_HEIGHT = 10000  # 10k pixels = ~8MB uncompressed
+MAX_SERVICES = 5
+
 
 def hex_to_rgb(hex_color: str) -> Tuple[int, int, int]:
     """Convert hex color string to RGB tuple.
 
     Args:
-        hex_color: Hex color string (e.g., '#1A1D29')
+        hex_color: Hex color string (e.g., '#1A1D29' or '1A1D29')
 
     Returns:
         RGB tuple (r, g, b)
+
+    Raises:
+        ValueError: If hex_color is not a valid 6-character hex color
+        TypeError: If hex_color is not a string
     """
+    if not isinstance(hex_color, str):
+        raise TypeError(f"hex_color must be string, got {type(hex_color).__name__}: {hex_color}")
+
+    # Remove leading # if present
     hex_color = hex_color.lstrip('#')
-    return tuple(int(hex_color[i:i+2], 16) for i in (0, 2, 4))
+
+    # Validate length
+    if len(hex_color) != 6:
+        raise ValueError(f"hex_color must be 6 characters (got {len(hex_color)}): '{hex_color}'")
+
+    # Convert with better error message
+    try:
+        return tuple(int(hex_color[i:i+2], 16) for i in (0, 2, 4))
+    except ValueError as e:
+        raise ValueError(f"Invalid hex color '{hex_color}': {e}") from e
 
 
 def load_fonts(pypath: str) -> Dict[str, ImageFont.FreeTypeFont]:
@@ -323,13 +344,18 @@ def parse_service_data(lines: List[str]) -> List[Dict]:
 
     Returns:
         List of service dictionaries with parsed data
+
+    Side effects:
+        Prints warnings to stderr for malformed lines
     """
     import re
 
     services = []
     current_service = None
+    skipped_lines = 0
+    malformed_services = []
 
-    for line in lines:
+    for line_num, line in enumerate(lines, start=1):
         line_stripped = line.strip()
         if not line_stripped or 'Destination' in line_stripped:
             continue
@@ -367,6 +393,13 @@ def parse_service_data(lines: List[str]) -> List[Dict]:
                     'calling_points': ''
                 }
                 services.append(current_service)
+            else:
+                # MALFORMED LINE - log warning
+                malformed_services.append((line_num, line_stripped, len(parts)))
+                skipped_lines += 1
+                print(f"WARNING: Skipping malformed service line {line_num}: {line_stripped[:80]}", file=sys.stderr)
+                print(f"  Expected 4-5 fields, found {len(parts)}", file=sys.stderr)
+                current_service = None  # Don't attach calling points to malformed service
 
         # Status line (explicit status after the main line)
         elif 'Status:' in line_stripped and current_service:
@@ -381,6 +414,14 @@ def parse_service_data(lines: List[str]) -> List[Dict]:
                 current_service['calling_points'] += ' ' + calling_points
             else:
                 current_service['calling_points'] = calling_points
+        elif '>>>' in line_stripped and not current_service:
+            # Orphaned calling points
+            skipped_lines += 1
+            print(f"WARNING: Orphaned calling points line {line_num} (no associated service)", file=sys.stderr)
+
+    # Summary report
+    if skipped_lines > 0:
+        print(f"PARSING SUMMARY: Skipped {skipped_lines} malformed lines, parsed {len(services)} services", file=sys.stderr)
 
     return services
 
@@ -740,57 +781,78 @@ def render_modern_board(
         # Get plugin path
         pypath = os.path.realpath(sys.path[0]) + '/'
 
-        # Load fonts
-        fonts = load_fonts(pypath)
+        # Load fonts with specific error handling
+        try:
+            fonts = load_fonts(pypath)
+        except (OSError, FileNotFoundError) as e:
+            print(f"FONT ERROR: {e}", file=sys.stderr)
+            print("Solution: Reinstall plugin or verify BoardFonts directory exists", file=sys.stderr)
+            return False
 
-        # Calculate image height dynamically (estimate generously, will crop at end)
-        height = 120  # Header estimate (may be taller with wrapped station names)
-
+        # Calculate and validate dimensions
+        height = 120
         if services:
-            # Each card: estimate max 160px (with 2 wrapped calling lines) + 12px spacing
             max_card_height = 160
             height += len(services[:5]) * (max_card_height + CARD_SPACING)
         else:
-            height += 200  # Space for "no trains" message
-
+            height += 200
         if messages:
             height += FOOTER_HEIGHT
+        height += MARGIN * 2
 
-        height += MARGIN * 2  # Top and bottom margins
+        # Validate dimensions before creating image
+        if height > MAX_IMAGE_HEIGHT:
+            print(f"ERROR: Image height {height}px exceeds max {MAX_IMAGE_HEIGHT}px", file=sys.stderr)
+            return False
 
-        # Create image (will be larger to accommodate wrapping)
-        img = Image.new(
-            'RGB',
-            (IMAGE_WIDTH, height),
-            hex_to_rgb(COLORS['background'])
-        )
-        draw = ImageDraw.Draw(img)
+        # Create image with PIL error handling
+        try:
+            img = Image.new('RGB', (IMAGE_WIDTH, height), hex_to_rgb(COLORS['background']))
+            draw = ImageDraw.Draw(img)
+        except (ValueError, MemoryError) as e:
+            print(f"PIL ERROR: Cannot create image: {e}", file=sys.stderr)
+            print(f"Dimensions: {IMAGE_WIDTH}x{height}", file=sys.stderr)
+            return False
 
-        # Render header with full station names
-        y = MARGIN
-        y = render_header(draw, y, station_title, departures_line, timestamp, fonts)
+        # Render content with data error handling
+        try:
+            y = MARGIN
+            y = render_header(draw, y, station_title, departures_line, timestamp, fonts)
 
-        # Render services or no trains message
-        if services:
-            y = render_services(draw, y, services, fonts)
-        else:
-            # Extract station name from title
-            station_name = station_title.split(' to ')[0] if ' to ' in station_title else station_title
-            y = render_no_trains_message(draw, y, station_name, fonts)
+            if services:
+                y = render_services(draw, y, services, fonts)
+            else:
+                station_name = station_title.split(' to ')[0] if ' to ' in station_title else station_title
+                y = render_no_trains_message(draw, y, station_name, fonts)
 
-        # Render footer if messages exist
-        if messages:
-            y = render_footer(draw, y, messages, fonts)
+            if messages:
+                y = render_footer(draw, y, messages, fonts)
+        except (KeyError, AttributeError, IndexError) as e:
+            print(f"DATA ERROR: Malformed service data: {e}", file=sys.stderr)
+            import traceback
+            traceback.print_exc()
+            return False
 
-        # Crop to actual used height
+        # Crop and save with I/O error handling
         img = img.crop((0, 0, IMAGE_WIDTH, y + MARGIN))
 
-        # Save PNG
-        img.save(output_path, 'png', optimize=True)
+        try:
+            # Ensure output directory exists
+            output_dir = os.path.dirname(output_path)
+            if output_dir and not os.path.exists(output_dir):
+                os.makedirs(output_dir, exist_ok=True)
+
+            img.save(output_path, 'png', optimize=True)
+        except OSError as e:
+            print(f"FILE ERROR: Cannot write image: {e}", file=sys.stderr)
+            print(f"Output path: {output_path}", file=sys.stderr)
+            return False
+
         return True
 
     except Exception as e:
-        print(f"Error rendering modern board: {e}", file=sys.stderr)
+        # Truly unexpected errors only
+        print(f"UNEXPECTED ERROR: {e}", file=sys.stderr)
         import traceback
         traceback.print_exc()
         return False
