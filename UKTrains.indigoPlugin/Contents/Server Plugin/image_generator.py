@@ -83,16 +83,18 @@ def _write_departure_board_text(
 		f.write(board_content)
 
 
-def _generate_departure_image(
+def _generate_single_image(
 	plugin_root: Path,
 	image_filename: Path,
 	text_filename: Path,
 	parameters_filename: Path,
 	departures_available: bool,
+	board_style: str,
 	device,
-	logger
+	logger,
+	plugin_prefs=None
 ) -> bool:
-	"""Launch subprocess to generate PNG image from text file.
+	"""Generate a single departure board image with specified style.
 
 	Handles text2png.py exit codes:
 		0 = Success
@@ -106,6 +108,7 @@ def _generate_departure_image(
 		text_filename: Path to input text file (Path object)
 		parameters_filename: Path to parameters configuration file (Path object)
 		departures_available: Boolean indicating if departures exist
+		board_style: Style to generate ('classic' or 'modern')
 		device: Indigo device object for state updates
 		logger: Plugin logger for error reporting
 
@@ -120,93 +123,164 @@ def _generate_departure_image(
 		str(image_filename),
 		str(text_filename),
 		str(parameters_filename),
-		dep_flag
+		dep_flag,
+		board_style
 	]
 
-	# Log command for debugging (can be removed after confirming stable)
-	logger.debug(f"Generating image: {image_filename.name}")
+	logger.debug(f"Generating {board_style} image: {image_filename.name}")
 
 	try:
 		result = subprocess.run(
 			cmd,
-			capture_output=True,  # Capture both stdout and stderr
-			text=True,            # Decode as strings
-			timeout=10,           # 10-second timeout for image generation
-			check=False           # Handle exit codes manually
+			capture_output=True,
+			text=True,
+			timeout=10,
+			check=False
 		)
 
-		# Log subprocess errors only
 		if result.stderr:
-			logger.error(f"Image generation stderr: {result.stderr}")
+			logger.error(f"Image generation stderr ({board_style}): {result.stderr}")
 
-		# Handle exit codes
 		if result.returncode == 0:
-			# Success
-			logger.debug(f"Image generated successfully for '{device.name}'")
-			device.updateStateOnServer('imageGenerationStatus', 'success')
-			device.updateStateOnServer('imageGenerationError', '')
+			logger.debug(f"{board_style.capitalize()} image generated successfully for '{device.name}'")
 			return True
 
 		elif result.returncode == 1:
-			# File I/O error
-			error_msg = "File I/O error: cannot read input files or write PNG"
+			error_msg = f"File I/O error in {board_style} image generation"
 			logger.error(f"{error_msg} for device '{device.name}'")
 			if result.stderr:
 				logger.error(f"Details: {result.stderr}")
-			device.updateStateOnServer('imageGenerationStatus', 'failed')
-			device.updateStateOnServer('imageGenerationError', error_msg)
 			return False
 
 		elif result.returncode == 2:
-			# PIL/Pillow error
-			error_msg = "PIL error: font loading or image creation failed"
+			error_msg = f"PIL error in {board_style} image generation"
 			logger.error(f"{error_msg} for device '{device.name}'")
 			if result.stderr:
 				logger.error(f"Details: {result.stderr}")
-			device.updateStateOnServer('imageGenerationStatus', 'failed')
-			device.updateStateOnServer('imageGenerationError', error_msg)
 			return False
 
 		elif result.returncode == 3:
-			# Other error (arguments, configuration)
-			error_msg = "Configuration error in image generation"
+			error_msg = f"Configuration error in {board_style} image generation"
 			logger.error(f"{error_msg} for device '{device.name}'")
 			if result.stderr:
 				logger.error(f"Details: {result.stderr}")
-			device.updateStateOnServer('imageGenerationStatus', 'failed')
-			device.updateStateOnServer('imageGenerationError', error_msg)
 			return False
 
 		else:
-			# Unknown exit code
-			error_msg = f"Unknown error (exit code {result.returncode})"
+			error_msg = f"Unknown error in {board_style} image generation (exit code {result.returncode})"
 			logger.error(f"{error_msg} for device '{device.name}'")
 			if result.stderr:
 				logger.error(f"Details: {result.stderr}")
-			device.updateStateOnServer('imageGenerationStatus', 'failed')
-			device.updateStateOnServer('imageGenerationError', error_msg)
 			return False
 
 	except subprocess.TimeoutExpired as e:
-		error_msg = "Timeout after 10 seconds"
-		logger.error(f"Image generation timed out for device '{device.name}'")
+		logger.error(f"{board_style.capitalize()} image generation timed out for device '{device.name}'")
 		if e.stderr:
 			logger.error(f"stderr before timeout: {e.stderr}")
-		device.updateStateOnServer('imageGenerationStatus', 'timeout')
-		device.updateStateOnServer('imageGenerationError', error_msg)
 		return False
 
 	except FileNotFoundError:
-		error_msg = f"Python interpreter not found: {constants.PYTHON3_PATH}"
-		logger.error(error_msg)
-		device.updateStateOnServer('imageGenerationStatus', 'config_error')
-		device.updateStateOnServer('imageGenerationError', error_msg)
+		logger.error(f"Python interpreter not found: {constants.PYTHON3_PATH}")
 		return False
 
 	except Exception as e:
-		error_msg = f"Unexpected error: {str(e)}"
-		logger.exception(f"Unexpected error generating image for device '{device.name}'")
-		device.updateStateOnServer('imageGenerationStatus', 'error')
+		logger.exception(f"Unexpected error generating {board_style} image for device '{device.name}'")
+		return False
+
+
+def _generate_departure_image(
+	plugin_root: Path,
+	image_filename: Path,
+	text_filename: Path,
+	parameters_filename: Path,
+	departures_available: bool,
+	device,
+	logger,
+	plugin_prefs=None
+) -> bool:
+	"""Generate departure board image(s) based on plugin configuration.
+
+	Can generate classic (720×400 landscape) and/or modern (414×variable portrait)
+	board styles simultaneously with different filenames.
+
+	Args:
+		plugin_root: Path to plugin root directory (Path object)
+		image_filename: Base path for PNG (Path object) - suffix added for modern
+		text_filename: Path to input text file (Path object)
+		parameters_filename: Path to parameters configuration file (Path object)
+		departures_available: Boolean indicating if departures exist
+		device: Indigo device object for state updates
+		logger: Plugin logger for error reporting
+		plugin_prefs: Plugin preferences dictionary (self.pluginPrefs from plugin.py)
+
+	Returns:
+		True if at least one image generated successfully, False if all failed
+	"""
+	# Get plugin preferences (default to empty dict if not provided for backwards compatibility)
+	if plugin_prefs is None:
+		plugin_prefs = {}
+
+	# Check which board styles to generate (default to classic only for backwards compatibility)
+	generate_classic = plugin_prefs.get('generateClassicBoard', True)
+	generate_modern = plugin_prefs.get('generateModernBoard', False)
+
+	# Track success for each style
+	classic_success = False
+	modern_success = False
+
+	# Generate classic board if enabled
+	if generate_classic:
+		classic_success = _generate_single_image(
+			plugin_root,
+			image_filename,
+			text_filename,
+			parameters_filename,
+			departures_available,
+			'classic',
+			device,
+			logger,
+			plugin_prefs
+		)
+
+	# Generate modern board if enabled (with _mobile suffix)
+	if generate_modern:
+		# Add _mobile suffix before .png extension
+		modern_filename = image_filename.parent / (image_filename.stem + '_mobile.png')
+		modern_success = _generate_single_image(
+			plugin_root,
+			modern_filename,
+			text_filename,
+			parameters_filename,
+			departures_available,
+			'modern',
+			device,
+			logger,
+			plugin_prefs
+		)
+
+	# Update device status based on results
+	if classic_success or modern_success:
+		# At least one succeeded
+		status_msg = []
+		if classic_success:
+			status_msg.append('classic')
+		if modern_success:
+			status_msg.append('modern')
+
+		device.updateStateOnServer('imageGenerationStatus', 'success')
+		device.updateStateOnServer('imageGenerationError', '')
+		logger.debug(f"Generated {' and '.join(status_msg)} image(s) for '{device.name}'")
+		return True
+	else:
+		# Both failed (or none were enabled)
+		if not generate_classic and not generate_modern:
+			error_msg = "No board styles enabled"
+			logger.warning(f"{error_msg} for device '{device.name}'")
+		else:
+			error_msg = "All enabled board styles failed to generate"
+			logger.error(f"{error_msg} for device '{device.name}'")
+
+		device.updateStateOnServer('imageGenerationStatus', 'failed')
 		device.updateStateOnServer('imageGenerationError', error_msg)
 		return False
 
@@ -236,16 +310,20 @@ def _append_train_to_image(
 	dest_etd = getattr(destination, 'etd', '00:00')
 	operator_code = getattr(destination, 'operator_code', 'Unknown')
 	operator_name = getattr(destination, 'operator_name', 'Unknown')
+	dest_platform = getattr(destination, 'platform', '')  # Platform number (may be None/empty)
 
 	# Calculate delay for display
 	has_problem, delay_msg = delayCalc(dest_std, dest_etd)
 
-	# Format main service line
+	# Format platform for display (empty if not available)
+	platform_text = dest_platform if dest_platform else ''
+
+	# Format main service line (now includes platform)
 	if len(delay_msg.strip()) == 0:
-		destination_content = f"\n{dest_text},{dest_std},{dest_etd},{operator_code}\n"
+		destination_content = f"\n{dest_text},{platform_text},{dest_std},{dest_etd},{operator_code}\n"
 		image_content.append(destination_content)
 	else:
-		destination_content = f"\n{dest_text},{dest_std},{dest_etd},{operator_name}"
+		destination_content = f"\n{dest_text},{platform_text},{dest_std},{dest_etd},{operator_name}"
 		image_content.append(destination_content)
 		delay_message = f'Status:{delay_msg}\n'
 		image_content.append(delay_message)
@@ -331,7 +409,16 @@ def _format_station_board(
 		elif '>>>' not in current_line:
 			# Regular destination line - parse and format columns
 			parts = current_line.split(',')
-			if len(parts) >= 4:
+			if len(parts) >= 5:
+				# New format with platform: Destination,Platform,Time,Status,Operator
+				destination = parts[0] + '-' * 50
+				platform = parts[1] + '-' * 10  # Platform field
+				schedule = parts[2] + '-' * 10
+				estimated = parts[3] + '-' * 10
+				operator = parts[4]
+				board_line = destination[:25] + platform[:5] + ' ' + schedule[:10] + estimated[:10] + operator
+			elif len(parts) >= 4:
+				# Legacy format without platform (backwards compatibility)
 				destination = parts[0] + '-' * 50
 				schedule = parts[1] + '-' * 10
 				estimated = parts[2] + '-' * 10

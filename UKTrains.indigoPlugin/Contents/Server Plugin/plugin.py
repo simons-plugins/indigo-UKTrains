@@ -279,7 +279,7 @@ from image_generator import (
 # _format_station_board moved to image_generator.py
 
 
-def routeUpdate(dev, apiAccess, networkrailURL, paths, logger):
+def routeUpdate(dev, apiAccess, networkrailURL, paths, logger, plugin_prefs=None):
 	"""
 	Update train departure device with latest information from Darwin API.
 
@@ -289,6 +289,7 @@ def routeUpdate(dev, apiAccess, networkrailURL, paths, logger):
 		networkrailURL: Darwin WSDL URL
 		paths: PluginPaths object with all file paths
 		logger: Plugin logger for error reporting
+		plugin_prefs: Plugin preferences dictionary (self.pluginPrefs)
 
 	Returns:
 		True if update successful, False otherwise
@@ -399,7 +400,8 @@ def routeUpdate(dev, apiAccess, networkrailURL, paths, logger):
 			parameters_file,
 			departures_available=departures_found,
 			device=dev,
-			logger=logger
+			logger=logger,
+			plugin_prefs=plugin_prefs
 		)
 
 		if image_success:
@@ -828,7 +830,7 @@ class Plugin(indigo.PluginBase):
 					dev.updateStateOnServer('destinationCRS',value = dev.pluginProps['destinationCode'])
 
 					# Update the device with the latest information
-					deviceRefresh = routeUpdate(dev, runtime_config.api_key, runtime_config.darwin_url, self.paths, self.plugin_logger)
+					deviceRefresh = routeUpdate(dev, runtime_config.api_key, runtime_config.darwin_url, self.paths, self.plugin_logger, self.pluginPrefs)
 
 					if not deviceRefresh:
 						# Update failed - probably due to SOAP server timeout

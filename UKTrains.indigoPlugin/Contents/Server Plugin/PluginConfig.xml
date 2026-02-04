@@ -108,6 +108,32 @@
         <Label>Normal Text Colour</Label>
     </Field>
     <Field id="simpleSeparator3" type="separator"/>
+    <Field id="autoLabel05"
+           type="label"
+           fontColor="black">
+        <Label>Departure Board Styles</Label>
+    </Field>
+    <Field id="autoLabel67"
+       type="label"
+       fontSize="small"
+       fontColor="blue">
+        <Label>Generate one or both departure board styles. Classic: 720×400px landscape (retro terminal for dashboards). Modern: 414×variable portrait (mobile-optimized for messaging apps). Both can be generated simultaneously with different filenames.</Label>
+    </Field>
+    <Field id="generateClassicBoard"
+           type="checkbox"
+           defaultValue="true"
+           tooltip="Generate classic 720×400px landscape board image (filename: {station}_departure_board.png)">
+        <Label>Generate Classic Board Image</Label>
+        <Description>720×400 landscape - retro terminal style for dashboards</Description>
+    </Field>
+    <Field id="generateModernBoard"
+           type="checkbox"
+           defaultValue="false"
+           tooltip="Generate modern 414×variable portrait board image (filename: {station}_departure_board_mobile.png)">
+        <Label>Generate Modern Board Image</Label>
+        <Description>414×variable portrait - mobile-optimized for messaging apps</Description>
+    </Field>
+    <Field id="simpleSeparator4" type="separator"/>
     <Field
 		id = "updaterEmailsEnabled"
 		type = "checkbox"

@@ -54,7 +54,7 @@ try:
     # Fail if no parameters found or less than 4
     if len(trainArguments) < 5:
         print("Error: Insufficient arguments", file=sys.stderr)
-        print(f"Usage: {sys.argv[0]} <image_file> <text_file> <params_file> <YES|NO>", file=sys.stderr)
+        print(f"Usage: {sys.argv[0]} <image_file> <text_file> <params_file> <YES|NO> [board_style]", file=sys.stderr)
         sys.exit(3)  # Other error (usage)
 
     # Ok get the details
@@ -63,10 +63,70 @@ try:
     parametersFileName = trainArguments[3]
     departuresAvailable = trainArguments[4]
 
+    # Check for board style parameter (5th argument, defaults to 'classic')
+    boardStyle = trainArguments[5] if len(trainArguments) > 5 else 'classic'
+
     if 'YES' in departuresAvailable:
         trainsFound = True
     else:
         trainsFound = False
+
+    # If modern style requested, delegate to modern renderer
+    if boardStyle == 'modern':
+        try:
+            from text2png_modern import render_modern_board, parse_service_data
+
+            # Read the text file
+            with open(trainTextFile, 'r') as f:
+                lines = f.readlines()
+
+            # Parse header data
+            station_title = lines[0].strip() if lines else "Station Departures"
+            departures_line = ""
+            timestamp = ""
+            messages = ""
+
+            # Extract departures line and timestamp
+            for line in lines:
+                if 'Departures - ' in line:
+                    departures_line = line.strip()
+                if 'Generated on:' in line:
+                    # Handle multi-line timestamps
+                    timestamp = line.replace('Generated on:', '').strip()
+                    break
+
+            # Extract station messages (lines with ++)
+            message_lines = [l.replace('++', '').strip() for l in lines if '++' in l]
+            messages = ' '.join(message_lines)
+
+            # Parse train services from dash-padded text format
+            services = parse_service_data(lines)
+
+            # Debug output
+            if not services:
+                print(f"Warning: No services parsed from {trainTextFile}", file=sys.stderr)
+                print(f"File had {len(lines)} lines", file=sys.stderr)
+
+            # Render modern board
+            success = render_modern_board(
+                station_title,
+                timestamp,
+                services,
+                messages,
+                imageFileName,
+                departures_line
+            )
+
+            sys.exit(0 if success else 2)
+
+        except ImportError as e:
+            print(f"Error: Cannot import modern renderer: {e}", file=sys.stderr)
+            sys.exit(3)
+        except Exception as e:
+            print(f"Modern rendering failed: {e}", file=sys.stderr)
+            import traceback
+            traceback.print_exc()
+            sys.exit(2)
 
     # Extract the standard parameters for the image from file
     # This file is used to communication between Indigo and this independant process

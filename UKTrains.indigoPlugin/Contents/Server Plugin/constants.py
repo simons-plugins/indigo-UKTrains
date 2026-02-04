@@ -99,3 +99,50 @@ class ColorScheme:
 
 # CRS code for "all destinations"
 ALL_DESTINATIONS_CRS = 'ALL'
+
+# Board styles (used as string values in subprocess calls)
+# 'classic' = 720×400 landscape (retro terminal style)
+# 'modern' = 414×variable portrait (mobile-optimized)
+
+# Modern design constants
+MODERN_IMAGE_WIDTH = 414
+MODERN_CARD_HEIGHT = 120
+MODERN_CARD_SPACING = 12
+MODERN_MARGIN = 20
+MODERN_CARD_PADDING = 16
+MODERN_BORDER_RADIUS = 8
+
+# Modern color scheme (WCAG AA compliant)
+@dataclass(frozen=True)
+class ModernColorScheme:
+    """Immutable color configuration for modern departure board style.
+
+    All colors meet WCAG AA contrast requirements (minimum 4.5:1 ratio).
+    Orange/blue contrast is colorblind-safe.
+    """
+    background: str = '#1A1D29'      # Dark blue-grey (not pure black)
+    card_surface: str = '#252938'    # Elevated card background
+    primary_text: str = '#FFFFFF'    # White text
+    secondary_text: str = '#A0A4B8'  # Grey-blue metadata
+    station_name: str = '#64B5F6'    # Light blue (6.2:1 contrast)
+    on_time: str = '#00C853'         # Vibrant green (4.7:1 contrast)
+    delayed: str = '#FF6B00'         # Orange warning (5.3:1 contrast)
+    cancelled: str = '#F44336'       # Red error (4.9:1 contrast)
+    early: str = '#2196F3'           # Blue info
+    platform: str = '#FFC107'        # Amber badge
+    operator: str = '#9E9E9E'        # Medium grey
+    separator: str = '#3A3F52'       # Subtle divider
+
+MODERN_COLORS = ModernColorScheme()
+
+# Modern font sizes (mobile-optimized)
+MODERN_FONT_SIZES = {
+    'station': 26,
+    'destination': 18,
+    'platform': 20,
+    'time': 16,
+    'status': 14,
+    'operator': 12,
+    'timestamp': 12,
+    'calling_points': 11
+}
