@@ -133,24 +133,6 @@
         <Label>Generate Modern Board Image</Label>
         <Description>414×variable portrait - mobile-optimized for messaging apps</Description>
     </Field>
-    <Field id="simpleSeparator4" type="separator"/>
-    <Field
-		id = "updaterEmailsEnabled"
-		type = "checkbox"
-		defaultValue = "false"
-		tooltip  =  "Enables (disables) email notifications.">
-		<Label>Check to enable email communications on updates to plugin</Label>
-		<Description>Enable/Disable email version updates</Description>
-	</Field>
-	<Field
-		id = "updaterEmail"
-		type = "textfield"
-		visibleBindingId = "updaterEmailsEnabled"
-		visibleBindingValue = "true"
-		tooltip = "Please enter the email address to receive notifications of updates to the plugin.">
-		<Label>What email address should be used?:</Label>
-	</Field>
-
     <Field id="simpleSeparator10" type="separator"/>
     <Field id="checkboxDebug1"
            type="checkbox"
