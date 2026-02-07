@@ -391,7 +391,7 @@ def routeUpdate(dev, apiAccess, networkrailURL, paths, logger, plugin_prefs=None
 
 	if current_hash != previous_hash:
 		# Content changed - regenerate image
-		logger.info(f"Board content changed for '{dev.name}', regenerating image")
+		logger.debug(f"Board content changed for '{dev.name}', regenerating image")
 
 		image_success = _generate_departure_image(
 			paths.plugin_root,
