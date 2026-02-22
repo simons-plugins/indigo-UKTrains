@@ -393,6 +393,33 @@ def parse_service_data(lines: List[str]) -> List[Dict]:
                     'calling_points': ''
                 }
                 services.append(current_service)
+            elif len(parts) == 3:
+                # Likely a cancelled/delayed train where status merged with operator
+                # e.g. "Cancelled-South Western Railway" (only 1-2 dashes between them)
+                # Try to split the last field on known status words
+                last_field = parts[2]
+                status_match = re.match(
+                    r'^(Cancelled|Delayed|On time|Bus)\s*-\s*(.*)',
+                    last_field, re.IGNORECASE
+                )
+                if status_match:
+                    current_service = {
+                        'destination': parts[0],
+                        'platform': '',
+                        'scheduled': parts[1],
+                        'estimated': status_match.group(1),
+                        'operator': status_match.group(2) or 'Unknown',
+                        'status': status_match.group(1),
+                        'calling_points': ''
+                    }
+                    services.append(current_service)
+                else:
+                    # Genuinely malformed
+                    malformed_services.append((line_num, line_stripped, len(parts)))
+                    skipped_lines += 1
+                    print(f"WARNING: Skipping malformed service line {line_num}: {line_stripped[:80]}", file=sys.stderr)
+                    print(f"  Expected 4-5 fields, found {len(parts)}", file=sys.stderr)
+                    current_service = None
             else:
                 # MALFORMED LINE - log warning
                 malformed_services.append((line_num, line_stripped, len(parts)))
