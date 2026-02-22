@@ -431,16 +431,16 @@ def _format_station_board(
 				destination = parts[0] + '-' * 50
 				platform = parts[1] + '-' * 10  # Platform field
 				schedule = parts[2] + '-' * 10
-				estimated = parts[3] + '-' * 10
+				estimated = parts[3] + '-' * 15
 				operator = parts[4]
-				board_line = destination[:25] + platform[:5] + ' ' + schedule[:10] + estimated[:10] + operator
+				board_line = destination[:25] + platform[:5] + ' ' + schedule[:10] + estimated[:15] + operator
 			elif len(parts) >= 4:
 				# Legacy format without platform (backwards compatibility)
 				destination = parts[0] + '-' * 50
 				schedule = parts[1] + '-' * 10
-				estimated = parts[2] + '-' * 10
+				estimated = parts[2] + '-' * 15
 				operator = parts[3]
-				board_line = destination[:35] + ' ' + schedule[:10] + estimated[:10] + operator
+				board_line = destination[:35] + ' ' + schedule[:10] + estimated[:15] + operator
 			else:
 				# Malformed line, keep as is
 				board_line = current_line
