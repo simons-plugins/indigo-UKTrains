@@ -282,6 +282,6 @@ Station codes loaded from [stationCodes.txt](UKTrains.indigoPlugin/Contents/Serv
 
 1. **Use `/indigo` skill** for all Indigo plugin development tasks
 2. **Subprocess calls** must use explicit Python path, not `sys.executable`
-3. **Diagnostic logging** is enabled by default for image generation (can be disabled after confirming stable)
+3. **Diagnostic logging** for image generation only appears when debug mode is enabled
 4. **Test deployment** on actual Indigo Mac before assuming fixes work
 5. **Version bumps** should follow semantic versioning in Info.plist

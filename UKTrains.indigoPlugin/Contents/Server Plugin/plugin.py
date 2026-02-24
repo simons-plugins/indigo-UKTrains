@@ -85,6 +85,7 @@ class PluginLogger:
 		"""
 		self.logger = logging.getLogger(f'Plugin.{plugin_id}')
 		self.logger.setLevel(logging.DEBUG if debug else logging.INFO)
+		self.logger.propagate = False  # Prevent messages leaking to Indigo Event Log
 
 		# Remove existing handlers
 		self.logger.handlers.clear()
