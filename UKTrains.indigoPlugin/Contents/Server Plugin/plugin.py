@@ -662,6 +662,11 @@ class Plugin(indigo.PluginBase):
 	########################################
 	def deviceStartComm(self, dev):
 		dev.stateListOrDisplayStateIdChanged()  # Ensure latest devices.xml is being used
+		# Exclude train devices from SQL Logger (frequent updates with many empty states cause errors)
+		if dev.sharedProps.get("sqlLoggerIgnoreStates") != "*":
+			shared = dev.sharedProps
+			shared["sqlLoggerIgnoreStates"] = "*"
+			dev.replaceSharedPropsOnServer(shared)
 		if dev.pluginProps['routeActive']:
 			dev.updateStateOnServer('deviceActive', True)
 		else:
