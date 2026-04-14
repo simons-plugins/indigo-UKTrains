@@ -1,5 +1,33 @@
 # CLAUDE.md
 
+> **Part of the [Indigo workspace](../CLAUDE.md)** — see root for cross-project map, standards, and tooling.
+
+## Project Identity
+
+- **Name**: UK-Trains (UK National Rail Darwin)
+- **Type**: Indigo plugin
+- **Shortcut**: `trains` / `UK trains`
+- **GitHub**: https://github.com/simons-plugins/indigo-UKTrains
+- **Language**: Python 3
+
+## Role in the workspace
+
+Indigo plugin integrating the UK National Rail Darwin SOAP API for real-time train departure and arrival information, with departure board image generation.
+
+## Related projects
+
+Standalone — no sibling dependencies in this workspace.
+
+## Standards
+
+Inherits workspace standards from [root CLAUDE.md](../CLAUDE.md#common-standards-apply-to-every-project-unless-its-claudemd-overrides). Key points for this project:
+
+- **Version bump per PR**: `Info.plist` `PluginVersion`
+- **Testing**: pytest
+- **Merge**: GitHub PR only, never `--admin`, never squash, wait for CI green, wait for user go-ahead.
+
+---
+
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## 🔧 Development Tools
@@ -12,9 +40,7 @@ The `/indigo` skill provides:
 - API reference and troubleshooting guides
 - Pattern matching for common plugin tasks
 
-To access: Type `/indigo` in Claude Code to load the Indigo development skill.
-
-See: [../Indigo-skill/README.md](../Indigo-skill/README.md) for installation and usage.
+To access: Type `/indigo:dev` in Claude Code to load the Indigo development skill. The source of those commands lives in [`../indigo-claude-plugin/`](../indigo-claude-plugin/).
 
 ## Project Overview
 
