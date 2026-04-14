@@ -1,152 +1,56 @@
-# External Integrations
+# INTEGRATIONS
 
-**Analysis Date:** 2026-02-01
+## National Rail Darwin LDB Webservice
 
-## APIs & External Services
+The only external service. Provides real-time UK train departure/arrival data via SOAP.
 
-**National Rail Darwin API:**
-- UK National Rail real-time departure and arrival information service
-  - SDK/Client: zeep>=4.2.1 (SOAP client)
-  - Endpoint: `https://lite.realtime.nationalrail.co.uk/OpenLDBWS/wsdl.aspx` (WSDL)
-  - Auth: `DARWIN_WEBSERVICE_API_KEY` environment variable (free API key from https://www.nationalrail.co.uk/developers/)
-  - API Type: SOAP webservice
-  - Key operations:
-    - `get_station_board()` - Fetch departure/arrival board for station with optional destination filtering
-    - `get_service_details()` - Fetch calling points and additional details for a specific train service
-  - Usage: `nredarwin.webservice.DarwinLdbSession` in `UKTrains.indigoPlugin/Contents/Server Plugin/nredarwin/webservice.py`
+- **WSDL endpoint**: `https://lite.realtime.nationalrail.co.uk/OpenLDBWS/wsdl.aspx`
+  (configurable in plugin prefs, stored as `darwinSite`)
+- **Authentication**: API key header injection via zeep's `BearerKeyPlugin`
+  (handled in `nredarwin/webservice.py`, key stored as plugin pref `darwinAPI`)
+- **Protocol**: SOAP over HTTPS
+- **Namespace**: `http://thalesgroup.com/RTTI/2010-11-01/ldb/commontypes`
 
-## Data Storage
+### API Key
 
-**Databases:**
-- None configured for production use
-- TinyDB (embedded) - Bundled locally in `UKTrains.indigoPlugin/Contents/Server Plugin/tinydb/` for potential local JSON storage
-  - Connection: File-based (not currently in active use)
-  - Client: Custom TinyDB implementation (v3 fork)
+Free registration at National Rail developer portal. Stored in Indigo plugin preferences —
+not in any dotenv or config file. No secrets should be committed to the repo (see `.env.example`).
 
-**File Storage:**
-- Local filesystem only
-- Departure board images: `~/Documents/IndigoImages/` (configurable via `PluginConfig.xml`)
-- Plugin logs: `~/Library/Application Support/Perceptive Automation/Indigo [VERSION]/Logs/`
-- Station codes: `UKTrains.indigoPlugin/Contents/Server Plugin/stationCodes.txt`
-- Parameters: `UKTrains.indigoPlugin/Contents/Server Plugin/trainparameters.txt`
+### Methods Used
 
-**Caching:**
-- None - Real-time data fetched on each poll cycle (configurable interval, default 60 seconds)
+| Method | Darwin Operation | Wrapper |
+|--------|-----------------|---------|
+| Get departures board (all destinations) | `get_station_board(crs, row_limit, True, False)` | `_fetch_station_board()` in `darwin_api.py` |
+| Get departures board (filtered by destination) | `get_station_board(crs, row_limit, True, False, dest_crs)` | `_fetch_station_board()` |
+| Get individual service details (calling points) | `get_service_details(service_id)` | `_fetch_service_details()` in `darwin_api.py` |
 
-## Authentication & Identity
+### Session Management
 
-**Auth Provider:**
-- Custom/Manual - Darwin API key required
-  - Implementation: Token-based SOAP header authentication
-  - Token header format: `<AccessToken><TokenValue>[API_KEY]</TokenValue></AccessToken>`
-  - Code: `UKTrains.indigoPlugin/Contents/Server Plugin/nredarwin/webservice.py:54-71` (SOAP header construction)
-  - Configured via plugin settings: `PluginConfig.xml`
+`nredarwin/webservice.py` `DarwinLdbSession` wraps zeep `Client`. Session is created
+per polling cycle (not persistent) via `nationalRailLogin()` in `darwin_api.py`.
 
-## Monitoring & Observability
+### Station Codes
 
-**Error Tracking:**
-- None (no external error tracking)
-- Manual logging to local files
+CRS (Computer Reservation System) 3-letter codes (e.g., `WAT` = London Waterloo).
+Full list in `UKTrains.indigoPlugin/Contents/Server Plugin/stationCodes.txt`
+(format: `CRS,Station Name`, ~2700+ entries). Special value `ALL` means all destinations.
 
-**Logs:**
-- Approach: Rotating file handler with size-based rotation (1MB max, 5 backups)
-- Log file: `UKTrains.log` in Indigo Logs directory
-- Code: `UKTrains.indigoPlugin/Contents/Server Plugin/plugin.py:69-95` (PluginLogger class)
-- Also logs to stderr for subprocess output
-- Debug flag in `PluginConfig.xml` controls verbosity
+### Error Handling
 
-## CI/CD & Deployment
+- SOAP faults (`zeep.exceptions.Fault`) trigger retry via tenacity decorator
+- Up to 3 retries with exponential backoff (1s, 2s, 4s) for station board
+- Up to 2 retries for service details
+- After all retries exhausted, `routeUpdate()` returns `False` and the device is
+  marked inactive for that polling cycle
 
-**Hosting:**
-- Local macOS machine (runs within Indigo home automation system)
-- Plugin distributed as `.indigoPlugin` bundle (macOS application bundle)
+### Retry Decorator
 
-**CI Pipeline:**
-- None (no external CI service configured)
-- Manual testing via pytest in development environment
+`darwin_api_retry(max_attempts)` in `darwin_api.py` — wraps tenacity. Falls back to
+identity decorator if tenacity is not installed.
 
-**Installation:**
-- Copy `UKTrains.indigoPlugin` bundle to `/Library/Application Support/Perceptive Automation/Indigo [VERSION]/Plugins/`
-- Enable in Indigo UI: Plugins → Manage Plugins
+## No Other External Services
 
-## Environment Configuration
-
-**Required env vars (Development/Testing):**
-- `DARWIN_WEBSERVICE_API_KEY` - Darwin API key (required to function)
-- `DARWIN_WEBSERVICE_WSDL` - Darwin WSDL URL (optional, has default)
-
-**Required env vars (Production/Plugin Runtime):**
-- Configured via Indigo plugin preferences UI (`PluginConfig.xml`)
-- No direct environment variable requirement in production
-
-**Secrets location:**
-- Development: `.env` file (git-ignored, see `.gitignore`)
-- Production: Indigo plugin preferences database (encrypted by Indigo)
-- Plugin security: API key stored in `plugin_prefs['darwinAPI']`
-
-## Webhooks & Callbacks
-
-**Incoming:**
-- None
-
-**Outgoing:**
-- None
-
-## API Integration Details
-
-### Darwin API Implementation
-
-**Location:** `UKTrains.indigoPlugin/Contents/Server Plugin/`
-
-**Main Integration Files:**
-- `darwin_api.py` - Wrapper functions with retry logic
-  - `nationalRailLogin()` - Authenticate and create DarwinLdbSession
-  - `_fetch_station_board()` - Fetch departures with exponential backoff retry
-  - `_fetch_service_details()` - Fetch calling points with retry
-  - Decorator: `@darwin_api_retry()` handles transient failures (WebFault, ConnectionError, TimeoutError)
-
-- `nredarwin/webservice.py` - Low-level SOAP client
-  - `DarwinLdbSession` class wraps zeep SOAP client
-  - Uses requests.Session for HTTP with 5-second timeout
-  - zeep HistoryPlugin for debugging SOAP calls
-  - SOAP authentication via AccessToken header
-
-**Retry Strategy:**
-- Uses tenacity library with exponential backoff
-- Station board: max 3 attempts, 1-10 seconds between retries
-- Service details: max 2 attempts, 1-10 seconds between retries
-- Retries on: WebFault (SOAP), ConnectionError, TimeoutError
-- Failures logged but don't stop plugin (graceful degradation)
-
-**Error Handling:**
-- Darwin API failures return False from `routeUpdate()`, skip update on next cycle
-- SOAP timeouts are expected and handled gracefully
-- Missing dependencies cause immediate plugin exit with logging
-- Code: `UKTrains.indigoPlugin/Contents/Server Plugin/darwin_api.py:47-78` (retry decorator)
-
-### Network Configuration
-
-**SSL/TLS:**
-- Enabled by default in zeep transport
-- Code: `nredarwin/webservice.py:39` (`session.verify = True`)
-
-**Timeouts:**
-- Default 5 seconds for both connection and operation timeouts
-- Configurable in `DarwinLdbSession.__init__()` via `timeout` parameter
-- Code: `nredarwin/webservice.py:40` (transport timeout)
-
-### Data Formats
-
-**Darwin API Responses:**
-- SOAP XML (zeep parses to Python objects)
-- Station board returns: List of train services with times, delays, calling points
-- Service details returns: Calling points with actual/estimated times
-
-**Departure Board Output:**
-- Text format: `[START_CRS][END_CRS]departureBoard.txt`
-- PNG format: `[START_CRS][END_CRS]timetable.png` (subprocess-generated)
-- Location: `~/Documents/IndigoImages/` (configurable)
-
----
-
-*Integration audit: 2026-02-01*
+- No version-check service (references to `updater` and `dropbox` URL were removed)
+- No push notifications
+- No cloud relay
+- All image output is local filesystem writes

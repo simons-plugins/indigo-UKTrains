@@ -1,173 +1,119 @@
-# Architecture
+# ARCHITECTURE
 
-**Analysis Date:** 2026-02-01
+## Plugin Lifecycle
 
-## Pattern Overview
+Standard Indigo `PluginBase` subclass in `plugin.py`:
 
-**Overall:** Modular Layered Architecture
+```
+__init__()      — initialize PluginConfig, PluginPaths, PluginLogger, Pydantic validation
+startup()       — update log level, iterate devices for state refresh
+runConcurrentThread()  — main polling loop (runs forever until StopThread)
+shutdown()      — log shutdown
+deviceStartComm()  — set sqlLoggerIgnoreStates="*", sync deviceActive state
+deviceStopComm()   — no-op
+```
 
-**Key Characteristics:**
-- Event-driven plugin lifecycle managed by Indigo framework
-- Concurrent polling pattern for periodic API updates
-- Separation of concerns with dedicated modules for each functional area
-- Asynchronous subprocess spawning for image generation (avoids shared library conflicts)
-- State-based device model mapping to Indigo's device/state abstraction
+`runConcurrentThread()` is the heartbeat. Each iteration:
+1. Loads `RuntimeConfig` from `self.pluginPrefs`
+2. Writes `trainparameters.txt` (color/font config for image generation)
+3. Iterates `indigo.devices.iter('self.trainTimetable')`
+4. Calls `routeUpdate(dev, ...)` for each active device
+5. Sleeps `runtime_config.refresh_freq` seconds (default 60, min 30, max 600)
 
-## Layers
+**Known issue**: `indigo.debugger()` is called unconditionally at line 789 inside
+`runConcurrentThread()` — this will pause the plugin waiting for a debugger connection.
 
-**Plugin Base Layer:**
-- Purpose: Indigo plugin lifecycle management and device control
-- Location: `UKTrains.indigoPlugin/Contents/Server Plugin/plugin.py` (main class at line 659+)
-- Contains: Plugin class extending `indigo.PluginBase`, startup/shutdown hooks, concurrent thread loop
-- Depends on: All other modules for delegated functionality
-- Used by: Indigo framework; entry point for all plugin operations
+## Device Types
 
-**API Wrapper Layer:**
-- Purpose: Encapsulate Darwin SOAP webservice communication with retry logic
-- Location: `UKTrains.indigoPlugin/Contents/Server Plugin/darwin_api.py`
-- Contains: `nationalRailLogin()`, `_fetch_station_board()`, `_fetch_service_details()` with retry decorators
-- Depends on: `nredarwin.webservice.DarwinLdbSession` (ZEEP SOAP client)
-- Used by: Device manager layer for fetching real-time train data
+One device type: `trainTimetable` (defined in `Devices.xml`).
 
-**SOAP Client Library:**
-- Purpose: Low-level SOAP communication with National Rail Darwin API
-- Location: `UKTrains.indigoPlugin/Contents/Server Plugin/nredarwin/webservice.py`
-- Contains: `DarwinLdbSession` class wrapping ZEEP client with authentication header building
-- Depends on: `zeep` (SOAP client library), `requests` (HTTP transport)
-- Used by: Darwin API wrapper layer
+Each device represents a single departure route:
+- **Origin station**: CRS code + long name stored in device states
+- **Destination**: CRS code + long name (or `ALL` for all destinations)
+- **Active toggle**: `routeActive` prop / `deviceActive` state
+- **States**: 10 train slots × 9 states each + station-level metadata
 
-**Device Management Layer:**
-- Purpose: Update Indigo device states with train data; aggregate station-level status
-- Location: `UKTrains.indigoPlugin/Contents/Server Plugin/device_manager.py`
-- Contains: `_process_train_services()`, `_update_train_device_states()`, `_clear_device_states()`, calling point processing
-- Depends on: Text formatter (for delay calculations), Darwin API wrapper (for service details)
-- Used by: Main plugin loop via `routeUpdate()`
+Per-train states (trainN prefix, N=1..10):
+`Dest`, `Op`, `Sch`, `Est`, `Delay`, `Issue` (bool), `Reason`, `Calling`, `Platform`
 
-**Text Formatting Layer:**
-- Purpose: Pure utility functions for time/date handling and delay calculations
-- Location: `UKTrains.indigoPlugin/Contents/Server Plugin/text_formatter.py`
-- Contains: `getUKTime()`, `delayCalc()`, `formatSpecials()` (HTML stripping)
-- Depends on: `pytz` (optional; falls back to GMT), `constants` for status enums
-- Used by: Device manager and image generator layers
+Station-level states:
+`stationLong`, `stationCRS`, `destinationLong`, `destinationCRS`, `timeGenerated`,
+`stationMessages`, `stationIssues` (bool), `imageGenerationStatus`, `imageGenerationError`,
+`image_content_hash`, `deviceStatus`, `deviceActive`
 
-**Image Generation Layer:**
-- Purpose: Coordinate text file writing and subprocess spawning for PNG board generation
-- Location: `UKTrains.indigoPlugin/Contents/Server Plugin/image_generator.py`
-- Contains: `_write_departure_board_text()`, `_generate_departure_image()`, `_format_station_board()`
-- Depends on: `text2png.py` subprocess (separate Python process), text formatter (for delays)
-- Used by: Main route update flow
+Device status icons:
+- `SensorOn` = on time
+- `SensorTripped` = delays/issues
+- `SensorOff` = inactive or update failed
 
-**Configuration Layer:**
-- Purpose: Centralize configuration management and path resolution
-- Location: `UKTrains.indigoPlugin/Contents/Server Plugin/config.py`
-- Contains: `RuntimeConfig`, `PluginConfig`, `PluginPaths` dataclasses with validation
-- Depends on: `constants` (for defaults)
-- Used by: Plugin main class and concurrent thread for reading preferences
-
-**Constants Layer:**
-- Purpose: Single source of truth for magic numbers, API endpoints, color schemes
-- Location: `UKTrains.indigoPlugin/Contents/Server Plugin/constants.py`
-- Contains: Train limits, Darwin API config, image dimensions, color schemes as dataclasses
-- Depends on: Nothing (leaf module)
-- Used by: All other modules
+SQL Logger is disabled for all states (`sqlLoggerIgnoreStates = "*"`) because frequent
+updates across 90 states cause errors.
 
 ## Data Flow
 
-**Route Update Cycle (main business process):**
+```
+runConcurrentThread()
+  └─ routeUpdate(dev, api_key, darwin_url, paths, logger, plugin_prefs)   [plugin.py]
+       ├─ nationalRailLogin(url, key)                                       [darwin_api.py]
+       ├─ _clear_device_states(dev)                                        [device_manager.py]
+       ├─ _fetch_station_board(session, start_crs, end_crs)                [darwin_api.py]
+       ├─ _process_train_services(dev, session, board, image_content, ...) [device_manager.py]
+       │    └─ for each service:
+       │         ├─ _fetch_service_details(session, service_id)            [darwin_api.py]
+       │         ├─ _update_train_device_states(dev, trainNum, ...)        [device_manager.py]
+       │         └─ _append_train_to_image(image_content, ...)             [image_generator.py]
+       ├─ _update_station_issues_flag(dev)                                 [device_manager.py]
+       ├─ _process_special_messages(board, dev)                            [device_manager.py]
+       ├─ _format_station_board(image_content, ...)                        [image_generator.py]
+       ├─ _write_departure_board_text(text_path, ...)                      [image_generator.py]
+       ├─ compute_board_content_hash(text_path, params_path)               [image_generator.py]
+       └─ _generate_departure_image(...)                                   [image_generator.py]
+            └─ _generate_single_image(..., board_style='classic'|'modern')
+                 └─ subprocess: python3 text2png.py [args]
+                      └─ (if modern) text2png_modern.py
+```
 
-1. **Trigger:** Plugin concurrent thread at line 745 loops every N seconds
-2. **Load Config:** RuntimeConfig loaded from pluginPrefs
-3. **For each device:** Call `routeUpdate()` at line 281
-4. **Authenticate:** `nationalRailLogin()` opens SOAP session (darwin_api.py:150)
-5. **Fetch Board:** `_fetch_station_board()` queries Darwin API for station departures (darwin_api.py:82)
-6. **Process Services Loop:** For each train (up to 10):
-   - `_fetch_service_details()` fetches full service info with calling points (darwin_api.py:124)
-   - `_update_train_device_states()` updates device states with time/delay/operator info (device_manager.py:137)
-   - `_append_train_to_image()` formats train for image output (image_generator.py)
-7. **Update Station Status:** `_update_station_issues_flag()` aggregates all trains for delays flag (device_manager.py:44)
-8. **Generate Image:** Subprocess spawned to convert text file to PNG via `text2png.py` (image_generator.py:52)
-9. **Next Cycle:** Sleep for refresh_freq seconds (plugin.py:830)
+## Image Generation Subsystem
 
-**State Management:**
+Images are generated in a **separate Python subprocess** to avoid shared library conflicts
+between Pillow and Indigo's embedded Python environment.
 
-- Device state: Organized as train1-train10 with suffixes (Dest, Sch, Est, Delay, Issue, Reason, Calling, Op)
-- Station-level state: stationIssues boolean aggregates all train Issues; deviceStatus shows human-readable status
-- Config state: RuntimeConfig constructed fresh each cycle from pluginPrefs
-- File state: Text and image files written to disk for control page display
+- Subprocess command: `PYTHON3_PATH text2png.py <image_path> <text_path> <params_path> YES|NO classic|modern`
+- `PYTHON3_PATH` = `/Library/Frameworks/Python.framework/Versions/Current/bin/python3` (never `sys.executable`)
+- `text2png.py` dispatches to `text2png_modern.py` if `board_style == 'modern'`
+- Exit codes: 0=success, 1=file I/O error, 2=PIL error, 3=config error
+- Timeout: 10 seconds
 
-## Key Abstractions
+**Content-hash optimization**: SHA-256 of board text + parameters file. Image regeneration
+is skipped if hash matches `image_content_hash` device state (avoids redundant disk writes).
 
-**StationBoard (Darwin API response):**
-- Purpose: Represents all departures from a given station
-- Examples: `device_manager.py` line 213 accesses `board.train_services` list
-- Pattern: Navigated via getattr() for null-safety
+### Board Styles
 
-**ServiceItem (Darwin API response):**
-- Purpose: Single train service with basic info (destination, times, operator)
-- Examples: `device_manager.py` line 157-160 extracts destination_text, std, etd
-- Pattern: Short-lived objects from API, stored as device state strings
+| Style | Dimensions | File suffix | Renderer |
+|-------|-----------|-------------|----------|
+| Classic | 720×400px landscape | `{CRS1}{CRS2}timetable.png` | `text2png.py` (original) |
+| Modern | 414×variable portrait | `{CRS1}{CRS2}timetable_mobile.png` | `text2png_modern.py` |
 
-**ServiceDetails (Darwin API response):**
-- Purpose: Full service info including calling points and cancellation/delay reasons
-- Examples: `device_manager.py` line 108-113 accesses subsequent_calling_points
-- Pattern: Fetched separately for each service after main board query
+Both styles read the same `.txt` text file written by `_write_departure_board_text()`.
 
-**PluginPaths (configuration object):**
-- Purpose: Centralized path management with lazy directory creation
-- Examples: `plugin.py` line 764 `self.paths.get_parameters_file()`
-- Pattern: Immutable dataclass with convenience getters
+Output directory: user-configured `imageFilename` pref, defaulting to `~/Documents/IndigoImages/`.
 
-**ColorScheme (configuration object):**
-- Purpose: Immutable color configuration for image generation
-- Examples: `constants.py` line 76-85 defines defaults; `config.py` line 62-68 loads from prefs
-- Pattern: Passed through layers via RuntimeConfig
+## Configuration Architecture
 
-## Entry Points
+Three layers:
+1. **`PluginConfig` dataclass** (`config.py`) — mutable runtime state (debug flag, paths, station dict)
+2. **`RuntimeConfig` dataclass** (`config.py`) — snapshot of plugin prefs per polling cycle
+3. **`PluginConfiguration` Pydantic model** (`config.py`) — startup validation (optional, skipped if pydantic absent)
 
-**Plugin Startup:**
-- Location: `plugin.py:705 def startup()`
-- Triggers: Indigo framework calls when plugin enabled
-- Responsibilities: Initialize logger, load preferences, register device state changes
+**`PluginPaths` dataclass** (`config.py`) — all file paths centralized, auto-detects newest
+Indigo version folder under `~/Library/Application Support/Perceptive Automation/`.
 
-**Concurrent Thread Loop:**
-- Location: `plugin.py:745 def runConcurrentThread()`
-- Triggers: Indigo framework spawns on plugin load
-- Responsibilities: Infinite loop polling each route device at refresh_freq interval
+## Module Decomposition
 
-**Device Add/Modify Callbacks:**
-- Location: `plugin.py:536 def deviceStartComm()` and `deviceStopComm()`
-- Triggers: Indigo framework when user adds/removes/disables device
-- Responsibilities: Track active devices for polling loop
-
-**Action Callbacks:**
-- Location: `plugin.py:650-703` (sensor action handlers)
-- Triggers: Indigo UI or automation rules when user requests action
-- Responsibilities: Validate/log read-only sensor requests (no actual control)
-
-## Error Handling
-
-**Strategy:** Graceful degradation with per-service fault tolerance
-
-**Patterns:**
-
-- API Retry: Exponential backoff via tenacity decorator (darwin_api.py:47-78) — up to 3 attempts on transient errors
-- Silent Service Skip: When `_fetch_service_details()` fails, skip that train but continue with others (device_manager.py:222-224)
-- Device Skip: If device update fails (`routeUpdate()` returns False), mark device as "Awaiting update" and move to next device (plugin.py:806-811)
-- Fallback Timezone: If pytz import fails, use GMT instead of BST (text_formatter.py:31-38)
-- Graceful Dependency Handling: If pydantic or tenacity missing, validate manually or skip retry logic (plugin.py:40-56, darwin_api.py:62-67)
-
-## Cross-Cutting Concerns
-
-**Logging:** PluginLogger class at `plugin.py:74-100` writes rotating file logs to Indigo Logs directory; debug flag controls verbosity throughout
-
-**Validation:** Pydantic models in `config.py:154-241` validate API keys, paths, update frequency; device properties validated in Indigo UI via Devices.xml schema
-
-**Authentication:** Darwin API token passed via ZEEP SOAP header (nredarwin/webservice.py:52-71); no session persistence (new session per route update)
-
-**Time Handling:** All times displayed in UK timezone using pytz (text_formatter.py:20-38); Darwin API returns times as strings requiring parsing
-
-**Image Generation:** Subprocess isolation to avoid PIL/library conflicts with Indigo's embedded Python (image_generator.py:52-95); text file intermediary used for IPC
-
----
-
-*Architecture analysis: 2026-02-01*
+`plugin.py` imports from five supporting modules:
+- `config.py` — dataclasses + Pydantic models
+- `constants.py` — magic numbers, enums, color schemes
+- `darwin_api.py` — SOAP authentication and fetching
+- `device_manager.py` — state clearing, updating, calling points
+- `image_generator.py` — text file writing, subprocess dispatch, content hashing
+- `text_formatter.py` — pure functions: `getUKTime()`, `delayCalc()`, `formatSpecials()`
