@@ -27,7 +27,7 @@ class TestDelayCalc:
         """Test when estimated matches scheduled time exactly"""
         has_problem, message = plugin.delayCalc("14:30", "14:30")
         assert has_problem is False
-        assert message == "On Time"
+        assert message == "On time"
 
     def test_cancelled_service(self):
         """Test when service is cancelled"""
@@ -95,7 +95,7 @@ class TestDelayCalc:
         """Test early morning service on time"""
         has_problem, message = plugin.delayCalc("06:30", "06:30")
         assert has_problem is False
-        assert message == "On Time"
+        assert message == "On time"
 
     def test_early_morning_delayed(self):
         """Test early morning service delayed"""
@@ -153,7 +153,7 @@ class TestDelayCalc:
         assert message == "5 mins late"
 
     @pytest.mark.parametrize("scheduled,estimated,expected_problem,expected_msg", [
-        ("10:00", "10:00", False, "On Time"),
+        ("10:00", "10:00", False, "On time"),
         ("10:00", "10:05", True, "5 mins late"),
         ("10:00", "09:55", True, "5 mins early"),
         ("10:00", "On time", False, "On time"),

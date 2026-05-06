@@ -22,7 +22,7 @@ class TestRouteUpdateIntegration:
                 mock_device,
                 api_key,
                 mock_plugin_paths,
-                mock_device,  # logger placeholder
+                Mock(),  # logger
             )
 
         assert result is True, "routeUpdate should return True on success"
@@ -41,11 +41,11 @@ class TestRouteUpdateIntegration:
 
         with patch('plugin.nationalRailLogin', return_value=(True, mock_darwin_delays)):
             result = plugin.routeUpdate(
-                mock_device, api_key, mock_plugin_paths, mock_device,
+                mock_device, api_key, mock_plugin_paths, Mock(),
             )
 
         assert result is True
-        problem_updates = [u for u in mock_device._state_updates if 'Problem' in u['key']]
+        problem_updates = [u for u in mock_device._state_updates if 'Issue' in u['key']]
         assert len(problem_updates) > 0
 
         delay_updates = [u for u in mock_device._state_updates if 'Delay' in u['key']]
@@ -53,11 +53,15 @@ class TestRouteUpdateIntegration:
 
     def test_route_update_with_cancelled_trains(self, mock_device, mock_darwin_cancellation, mock_plugin_paths):
         """Test route update handles cancelled trains"""
+        # Disable destination filter so all services in the mocked board reach
+        # the train state updates (default fixture sets BRI which would filter
+        # out the Reading and Oxford services in the cancellation scenario).
+        mock_device.states['destinationCRS'] = 'ALL'
         api_key = "test_api_key"
 
         with patch('plugin.nationalRailLogin', return_value=(True, mock_darwin_cancellation)):
             result = plugin.routeUpdate(
-                mock_device, api_key, mock_plugin_paths, mock_device,
+                mock_device, api_key, mock_plugin_paths, Mock(),
             )
 
         assert result is True
@@ -71,7 +75,7 @@ class TestRouteUpdateIntegration:
 
         with patch('plugin.nationalRailLogin', return_value=(True, mock_darwin_empty)):
             result = plugin.routeUpdate(
-                mock_device, api_key, mock_plugin_paths, mock_device,
+                mock_device, api_key, mock_plugin_paths, Mock(),
             )
 
         assert result is True
@@ -87,7 +91,7 @@ class TestRouteUpdateIntegration:
 
         with patch('plugin.nationalRailLogin', return_value=(True, mock_session)):
             result = plugin.routeUpdate(
-                mock_device, api_key, mock_plugin_paths, mock_device,
+                mock_device, api_key, mock_plugin_paths, Mock(),
             )
 
         assert result is False
@@ -98,7 +102,7 @@ class TestRouteUpdateIntegration:
         disabled_device.enabled = False
 
         result = plugin.routeUpdate(
-            disabled_device, "api_key", mock_plugin_paths, disabled_device,
+            disabled_device, "api_key", mock_plugin_paths, Mock(),
         )
         assert result is False
 
@@ -126,18 +130,21 @@ class TestRouteUpdateIntegration:
 
         with patch('plugin.nationalRailLogin', return_value=(True, mock_session)):
             result = plugin.routeUpdate(
-                mock_device, api_key, mock_plugin_paths, mock_device,
+                mock_device, api_key, mock_plugin_paths, Mock(),
             )
 
         assert result is True
-        dest_updates = [u for u in mock_device._state_updates if u['key'] == 'train1Destination']
-        if dest_updates:
-            assert 'Bristol' in dest_updates[0]['value']
+        # Use the last update — earlier updates may include the clear-states
+        # pass that runs at the start of routeUpdate.
+        dest_updates = [u for u in mock_device._state_updates if u['key'] == 'train1Dest']
+        non_empty = [u for u in dest_updates if u['value']]
+        assert non_empty, "Expected at least one non-empty train1Dest update"
+        assert 'Bristol' in non_empty[-1]['value']
 
     def test_route_update_clears_old_states(self, mock_device, mock_plugin_paths):
         """Test that old device states are cleared before update"""
-        mock_device.states['train1Destination'] = 'Old Destination'
-        mock_device.states['train2Destination'] = 'Old Destination'
+        mock_device.states['train1Dest'] = 'Old Destination'
+        mock_device.states['train2Dest'] = 'Old Destination'
         api_key = "test_api_key"
 
         from mocks.mock_darwin import create_mock_darwin_session
@@ -145,11 +152,11 @@ class TestRouteUpdateIntegration:
 
         with patch('plugin.nationalRailLogin', return_value=(True, mock_session)):
             result = plugin.routeUpdate(
-                mock_device, api_key, mock_plugin_paths, mock_device,
+                mock_device, api_key, mock_plugin_paths, Mock(),
             )
 
         train_updates = [u for u in mock_device._state_updates
-                         if 'train' in u['key'].lower() and 'Destination' in u['key']]
+                         if 'train' in u['key'].lower() and 'Dest' in u['key']]
         cleared_updates = [u for u in train_updates if u['value'] == '']
         assert len(cleared_updates) > 0, "Old train states should be cleared"
 
@@ -164,7 +171,7 @@ class TestRouteUpdateWithCallingPoints:
 
         with patch('plugin.nationalRailLogin', return_value=(True, mock_darwin_normal)):
             result = plugin.routeUpdate(
-                mock_device, api_key, mock_plugin_paths, mock_device,
+                mock_device, api_key, mock_plugin_paths, Mock(),
             )
         assert result is True
 
@@ -174,6 +181,6 @@ class TestRouteUpdateWithCallingPoints:
 
         with patch('plugin.nationalRailLogin', return_value=(True, mock_darwin_normal)):
             result = plugin.routeUpdate(
-                mock_device, api_key, mock_plugin_paths, mock_device,
+                mock_device, api_key, mock_plugin_paths, Mock(),
             )
         assert result is True
