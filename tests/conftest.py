@@ -70,7 +70,6 @@ def mock_device():
         enabled=True,
         pluginProps={
             'darwinAPI': 'test_api_key_12345',
-            'darwinSite': 'https://lite.realtime.nationalrail.co.uk/OpenLDBWS/wsdl.aspx',
             'stationImage': True,
             'updateFreq': 60,
             'imageFilename': '/tmp/test_images',
@@ -177,7 +176,6 @@ def mock_plugin_prefs():
     """
     return {
         'darwinAPI': 'test_api_key',
-        'darwinSite': 'https://lite.realtime.nationalrail.co.uk/OpenLDBWS/wsdl.aspx',
         'checkboxDebug1': True,
         'updateFreq': '60',
         'createMaps': 'true',

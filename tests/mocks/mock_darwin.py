@@ -1,213 +1,229 @@
 """
-Mock Darwin API responses for testing
+Mock Darwin REST responses for testing.
 
-Provides mock SOAP responses that simulate the National Rail Darwin API
+Builds JSON dicts in the shape returned by the raildata.org.uk LDBWS REST
+service (`GetDepBoardWithDetails`) and wraps them in the real
+`nredarwin.webservice` classes — so tests exercise the production wrapper
+layer rather than a parallel mock hierarchy.
 """
 
-from unittest.mock import Mock
+from typing import Iterable, List, Optional
+
+# Production wrappers — tests use the real classes against synthetic JSON
+from nredarwin.webservice import StationBoard, ServiceItem, CallingPoint
 
 
-class MockCallingPoint:
-    """Mock calling point (station) on a route"""
+# ---------------------------------------------------------------------------
+# Calling-point and service factories (return raw dicts)
+# ---------------------------------------------------------------------------
 
-    def __init__(self, location_name, st, et="On time"):
-        self.location_name = location_name
-        self.st = st  # Scheduled time
-        self.et = et  # Estimated time
-
-
-class MockServiceItem:
-    """Mock service item (train) from station board"""
-
-    def __init__(self, destination_text, std, etd, operator_name="GWR", service_id="test_service_123"):
-        self.destination_text = destination_text
-        self.std = std  # Scheduled departure
-        self.etd = etd  # Estimated departure
-        self.operator_name = operator_name
-        self.service_id = service_id
+def calling_point_dict(location_name: str, st: str, et: str = "On time",
+                       crs: str = "") -> dict:
+    return {
+        "locationName": location_name,
+        "crs": crs,
+        "st": st,
+        "et": et,
+        "isCancelled": False,
+    }
 
 
-class MockServiceDetails:
-    """Mock detailed service information"""
+def service_dict(destination_name: str,
+                 std: str,
+                 etd: str = "On time",
+                 operator: str = "Great Western Railway",
+                 operator_code: str = "GW",
+                 service_id: str = "service_on_time_001",
+                 platform: Optional[str] = None,
+                 calling_points: Optional[Iterable[dict]] = None,
+                 is_cancelled: bool = False,
+                 destination_crs: str = "") -> dict:
+    return {
+        "std": std,
+        "etd": etd,
+        "operator": operator,
+        "operatorCode": operator_code,
+        "serviceID": service_id,
+        "platform": platform,
+        "isCancelled": is_cancelled,
+        "isCircularRoute": False,
+        "destination": [{"locationName": destination_name, "crs": destination_crs}],
+        "origin": [{"locationName": "London Paddington", "crs": "PAD"}],
+        "subsequentCallingPoints": (
+            [{"callingPoint": list(calling_points)}] if calling_points else []
+        ),
+    }
 
-    def __init__(self, calling_points=None):
-        self.subsequent_calling_points = calling_points or []
+
+def station_board_dict(location_name: str = "London Paddington",
+                       crs: str = "PAD",
+                       services: Optional[List[dict]] = None,
+                       nrcc_messages: Optional[List[str]] = None) -> dict:
+    return {
+        "locationName": location_name,
+        "crs": crs,
+        "generatedAt": "2026-05-06T10:30:00.0000000+01:00",
+        "trainServices": services or [],
+        "nrccMessages": [{"Value": m} for m in (nrcc_messages or [])],
+    }
 
 
-class MockStationBoard:
-    """Mock station departure board"""
+# ---------------------------------------------------------------------------
+# Backwards-compat helpers (legacy names used by existing tests)
+# ---------------------------------------------------------------------------
 
-    def __init__(self, location_name, train_services=None):
-        self.location_name = location_name
-        self.train_services = train_services or []
+def create_calling_points_normal() -> List[dict]:
+    return [
+        calling_point_dict("Slough", "14:35"),
+        calling_point_dict("Reading", "14:45"),
+        calling_point_dict("Didcot Parkway", "15:05"),
+        calling_point_dict("Swindon", "15:25"),
+        calling_point_dict("Bristol Temple Meads", "16:00"),
+    ]
 
 
-# Sample fixture data
+def create_calling_points_delayed() -> List[dict]:
+    return [
+        calling_point_dict("Slough", "15:50", "15:55"),
+        calling_point_dict("Reading", "16:00", "16:10"),
+        calling_point_dict("Oxford", "16:30", "16:50"),
+    ]
 
-def create_on_time_service():
-    """Create a service that's running on time"""
-    return MockServiceItem(
-        destination_text="Bristol Temple Meads",
+
+def create_on_time_service() -> ServiceItem:
+    return ServiceItem(service_dict(
+        destination_name="Bristol Temple Meads",
         std="14:30",
         etd="On time",
-        operator_name="Great Western Railway",
-        service_id="service_on_time_001"
-    )
+        service_id="service_on_time_001",
+        calling_points=create_calling_points_normal(),
+    ))
 
 
-def create_delayed_service():
-    """Create a service that's delayed"""
-    return MockServiceItem(
-        destination_text="Oxford",
+def create_delayed_service() -> ServiceItem:
+    return ServiceItem(service_dict(
+        destination_name="Oxford",
         std="15:45",
-        etd="16:05",  # 20 minutes late
-        operator_name="Great Western Railway",
-        service_id="service_delayed_001"
-    )
+        etd="16:05",
+        service_id="service_delayed_001",
+        calling_points=create_calling_points_delayed(),
+    ))
 
 
-def create_cancelled_service():
-    """Create a cancelled service"""
-    return MockServiceItem(
-        destination_text="Reading",
+def create_cancelled_service() -> ServiceItem:
+    return ServiceItem(service_dict(
+        destination_name="Reading",
         std="12:15",
         etd="Cancelled",
-        operator_name="Great Western Railway",
-        service_id="service_cancelled_001"
-    )
+        service_id="service_cancelled_001",
+        is_cancelled=True,
+    ))
 
 
-def create_early_service():
-    """Create a service running early"""
-    return MockServiceItem(
-        destination_text="Swansea",
+def create_early_service() -> ServiceItem:
+    return ServiceItem(service_dict(
+        destination_name="Swansea",
         std="16:00",
-        etd="15:57",  # 3 minutes early
-        operator_name="Great Western Railway",
-        service_id="service_early_001"
-    )
+        etd="15:57",
+        service_id="service_early_001",
+        calling_points=create_calling_points_normal(),
+    ))
 
 
-def create_calling_points_normal():
-    """Create normal calling points for a service"""
-    return [
-        MockCallingPoint("Slough", "14:35", "On time"),
-        MockCallingPoint("Reading", "14:45", "On time"),
-        MockCallingPoint("Didcot Parkway", "15:05", "On time"),
-        MockCallingPoint("Swindon", "15:25", "On time"),
-        MockCallingPoint("Bristol Temple Meads", "16:00", "On time"),
-    ]
-
-
-def create_calling_points_delayed():
-    """Create delayed calling points"""
-    return [
-        MockCallingPoint("Slough", "15:50", "15:55"),  # 5 min delay
-        MockCallingPoint("Reading", "16:00", "16:10"),  # 10 min delay
-        MockCallingPoint("Oxford", "16:30", "16:50"),  # 20 min delay
-    ]
-
-
-def create_station_board_paddington():
-    """Create a mock station board for London Paddington"""
+def create_station_board_paddington() -> StationBoard:
     services = [
-        create_on_time_service(),
-        create_delayed_service(),
-        create_early_service(),
+        service_dict("Bristol Temple Meads", "14:30",
+                     service_id="service_on_time_001",
+                     calling_points=create_calling_points_normal()),
+        service_dict("Oxford", "15:45", etd="16:05",
+                     service_id="service_delayed_001",
+                     calling_points=create_calling_points_delayed()),
+        service_dict("Swansea", "16:00", etd="15:57",
+                     service_id="service_early_001",
+                     calling_points=create_calling_points_normal()),
     ]
-    return MockStationBoard("London Paddington", services)
+    return StationBoard(station_board_dict(services=services))
 
 
-def create_station_board_with_cancellation():
-    """Create a station board including a cancelled service"""
+def create_station_board_with_cancellation() -> StationBoard:
     services = [
-        create_on_time_service(),
-        create_cancelled_service(),
-        create_delayed_service(),
+        service_dict("Bristol Temple Meads", "14:30",
+                     service_id="service_on_time_001",
+                     calling_points=create_calling_points_normal()),
+        service_dict("Reading", "12:15", etd="Cancelled",
+                     service_id="service_cancelled_001",
+                     is_cancelled=True),
+        service_dict("Oxford", "15:45", etd="16:05",
+                     service_id="service_delayed_001",
+                     calling_points=create_calling_points_delayed()),
     ]
-    return MockStationBoard("London Paddington", services)
+    return StationBoard(station_board_dict(services=services))
 
 
-def create_empty_station_board():
-    """Create an empty station board (no services)"""
-    return MockStationBoard("London Paddington", [])
+def create_empty_station_board() -> StationBoard:
+    return StationBoard(station_board_dict(services=[]))
 
+
+# ---------------------------------------------------------------------------
+# Mock REST session — matches the new DarwinLdbSession surface
+# ---------------------------------------------------------------------------
 
 class MockDarwinSession:
-    """Mock Darwin SOAP session"""
+    """Test double for the new REST-based DarwinLdbSession."""
 
-    def __init__(self, wsdl, api_key, station_board=None):
-        self.wsdl = wsdl
+    def __init__(self, api_key: str = "test_api_key",
+                 base_url: Optional[str] = None,
+                 station_board: Optional[StationBoard] = None):
         self.api_key = api_key
+        self.base_url = base_url
         self._station_board = station_board or create_station_board_paddington()
-        self._service_details = {}
 
-    def get_station_board(self, crs_code, num_rows=100, include_departures=True,
-                          include_arrivals=False, destination_crs=None):
-        """Mock get_station_board SOAP call"""
-        if destination_crs and destination_crs != 'ALL':
-            # Filter services to destination
-            filtered_services = [
+    def get_station_board(self, crs, rows=10, include_departures=True,
+                          include_arrivals=False, destination_crs=None,
+                          origin_crs=None):
+        if destination_crs and destination_crs != "ALL":
+            filtered = [
                 svc for svc in self._station_board.train_services
                 if destination_crs.lower() in svc.destination_text.lower()
             ]
-            return MockStationBoard(self._station_board.location_name, filtered_services)
-
+            data = station_board_dict(
+                location_name=self._station_board.location_name,
+                crs=self._station_board.crs or "PAD",
+                services=[svc._data for svc in filtered],
+            )
+            return StationBoard(data)
         return self._station_board
 
     def get_service_details(self, service_id):
-        """Mock get_service_details SOAP call"""
-        # Return cached service details or create default
-        if service_id in self._service_details:
-            return self._service_details[service_id]
-
-        # Default: service with normal calling points
-        return MockServiceDetails(create_calling_points_normal())
-
-    def set_service_details(self, service_id, calling_points):
-        """Helper to set specific calling points for a service"""
-        self._service_details[service_id] = MockServiceDetails(calling_points)
+        # Calling points are inline on ServiceItem in the new flow,
+        # so this method is rarely used. Return the matching ServiceItem
+        # if present, else None.
+        for svc in self._station_board.train_services:
+            if svc.service_id == service_id:
+                return svc
+        return None
 
 
-def create_mock_darwin_session(scenario="normal"):
-    """
-    Factory to create mock Darwin session with different scenarios
+def create_mock_darwin_session(scenario: str = "normal") -> MockDarwinSession:
+    """Build a MockDarwinSession for a named scenario."""
+    delay = service_dict("Oxford", "15:45", etd="16:05",
+                         service_id="service_delayed_001",
+                         calling_points=create_calling_points_delayed())
+    cancel = service_dict("Reading", "12:15", etd="Cancelled",
+                          service_id="service_cancelled_001",
+                          is_cancelled=True)
+    on_time = service_dict("Bristol Temple Meads", "14:30",
+                           service_id="service_on_time_001",
+                           calling_points=create_calling_points_normal())
+    early = service_dict("Swansea", "16:00", etd="15:57",
+                         service_id="service_early_001",
+                         calling_points=create_calling_points_normal())
 
-    Scenarios:
-    - "normal": On-time services with normal calling points
-    - "delays": Services with various delays
-    - "cancellation": Includes cancelled services
-    - "empty": No services
-    - "mixed": Mix of on-time, delayed, and cancelled
-    """
-    scenarios = {
+    boards = {
         "normal": create_station_board_paddington(),
-        "delays": MockStationBoard("London Paddington", [
-            create_delayed_service(),
-            create_delayed_service(),
-        ]),
+        "delays": StationBoard(station_board_dict(services=[delay, delay])),
         "cancellation": create_station_board_with_cancellation(),
         "empty": create_empty_station_board(),
-        "mixed": MockStationBoard("London Paddington", [
-            create_on_time_service(),
-            create_delayed_service(),
-            create_cancelled_service(),
-            create_early_service(),
-        ]),
+        "mixed": StationBoard(station_board_dict(services=[on_time, delay, cancel, early])),
     }
-
-    board = scenarios.get(scenario, create_station_board_paddington())
-    session = MockDarwinSession(
-        wsdl="https://lite.realtime.nationalrail.co.uk/OpenLDBWS/wsdl.aspx",
-        api_key="test_api_key",
-        station_board=board
-    )
-
-    # Set up service details for each service
-    for service in board.train_services:
-        if "delayed" in service.service_id.lower():
-            session.set_service_details(service.service_id, create_calling_points_delayed())
-        else:
-            session.set_service_details(service.service_id, create_calling_points_normal())
-
-    return session
+    return MockDarwinSession(station_board=boards.get(scenario, boards["normal"]))

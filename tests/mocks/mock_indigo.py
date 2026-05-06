@@ -18,7 +18,6 @@ class MockDevice:
         self.enabled = enabled
         self.pluginProps = kwargs.get('pluginProps', {
             'darwinAPI': 'test_api_key',
-            'darwinSite': 'https://lite.realtime.nationalrail.co.uk/OpenLDBWS/wsdl.aspx',
             'stationImage': True,
             'updateFreq': 60,
             'imageFilename': '/tmp/test_images',
