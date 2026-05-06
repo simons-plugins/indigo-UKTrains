@@ -456,7 +456,6 @@ class Plugin(indigo.PluginBase):
 			debug=pluginPrefs.get('checkboxDebug1', False),
 			plugin_path=Path(_MODULE_PYPATH),
 			station_dict={},
-			error_log_path=Path('/Library/Application Support/Perceptive Automation/Indigo 2023.2/Logs/NationRailErrors.log'),
 			pytz_available=not _MODULE_FAILPYTZ
 		)
 
@@ -785,7 +784,6 @@ class Plugin(indigo.PluginBase):
 
 		self.logger.info('New Log:'+str(time.strftime(time.asctime()))+'\n')
 
-		logTimeNextReset = time.time()+int(3600)
 		indigo.debugger()
 		while True:
 			# Load configuration once per loop using RuntimeConfig
@@ -806,15 +804,6 @@ class Plugin(indigo.PluginBase):
 
 			# Note: Update checker functionality removed - self.updater was never initialized
 			# If update checking is needed in the future, initialize self.updater in __init__
-
-			# Reset the log?
-			if logTimeNextReset<time.time():
-				with open(self.config.error_log_path, 'w') as f:
-					f.write('#'*80+'\n')
-					f.write('Log reset:'+str(time.strftime(time.asctime()))+'\n')
-					f.write('#'*80+'\n')
-				logReset = False
-				logTimeNextReset = time.time()+int(3600)
 
 			for dev in indigo.devices.iter('self.trainTimetable'):
 				# Refresh each of the timeTable route devices in turn

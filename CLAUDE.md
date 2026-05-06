@@ -250,7 +250,7 @@ No automated test suite exists. Testing is manual:
 
 ### Debugging
 - Enable debug mode in plugin configuration ([PluginConfig.xml:129](UKTrains.indigoPlugin/Contents/Server%20Plugin/PluginConfig.xml#L129))
-- Debug logs written to `/Library/Application Support/Perceptive Automation/Indigo 2023.2/Logs/NationRailErrors.log`
+- Plugin log (`UKTrains.log`) is written to Indigo's `Logs/` folder, resolved at runtime via `indigo.server.getInstallFolderPath()` so it stays correct across Indigo version upgrades.
 - Global `nationalDebug` flag controls verbose logging throughout codebase
 
 ## Important Implementation Details
