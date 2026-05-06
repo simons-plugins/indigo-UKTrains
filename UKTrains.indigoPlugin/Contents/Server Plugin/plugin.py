@@ -197,11 +197,7 @@ except ImportError as e:
 	indigo.server.log(f"** Couldn't find nredarwin module: {e} - contact developer or check forums for support **", level=logging.CRITICAL)
 	sys.exit(3)
 
-try:
-	from zeep.exceptions import Fault as WebFault
-except ImportError as e:
-	indigo.server.log(f"** Couldn't find zeep module: {e} - check forums for install process for your system **", level=logging.CRITICAL)
-	sys.exit(4)
+from nredarwin.webservice import WebServiceError
 
 try:
 	import functools
@@ -280,14 +276,13 @@ from image_generator import (
 # _format_station_board moved to image_generator.py
 
 
-def routeUpdate(dev, apiAccess, networkrailURL, paths, logger, plugin_prefs=None):
+def routeUpdate(dev, apiAccess, paths, logger, plugin_prefs=None):
 	"""
 	Update train departure device with latest information from Darwin API.
 
 	Args:
 		dev: Indigo device object
-		apiAccess: Darwin API key
-		networkrailURL: Darwin WSDL URL
+		apiAccess: Darwin API key (raildata.org.uk LDBWS consumer key)
 		paths: PluginPaths object with all file paths
 		logger: Plugin logger for error reporting
 		plugin_prefs: Plugin preferences dictionary (self.pluginPrefs)
@@ -300,7 +295,7 @@ def routeUpdate(dev, apiAccess, networkrailURL, paths, logger, plugin_prefs=None
 		return False
 
 	# Login to Darwin
-	accessLogin = nationalRailLogin(networkrailURL, apiAccess)
+	accessLogin = nationalRailLogin(apiAccess)
 	if not accessLogin[0]:
 		# Login failed so ignore and return
 		return False
@@ -319,8 +314,8 @@ def routeUpdate(dev, apiAccess, networkrailURL, paths, logger, plugin_prefs=None
 	# Fetch station board with optional destination filter
 	try:
 		stationBoardDetails = _fetch_station_board(darwinSession, stationStartCrs, stationEndCrs)
-	except (WebFault, Exception) as e:
-		errorHandler(f'WARNING ** SOAP resolution failed: {e} - will retry later when server less busy **')
+	except (WebServiceError, Exception) as e:
+		errorHandler(f'WARNING ** Darwin REST request failed: {e} - will retry later when server less busy **')
 		return False
 
 	# Update station metadata on device
@@ -555,16 +550,6 @@ class Plugin(indigo.PluginBase):
 			errorDict["showAlertText"] ='You must enter a valid API key - see forum for details on obtaining a free key'
 			return (False, devProps, errorDict)
 
-		if 'darwinSite' in devProps:
-			if len(devProps['darwinSite']) == 0:
-				devProps['darwinSite']='Please enter valid network site URL'
-				errorDict = indigo.Dict()
-				errorDict["darwinSite"] = "Invalid Darwin Network Rail URL"
-				errorDict["showAlertText"] ='You must enter a valid Network Rail Darwin Site  - see forum for details on obtaining a free key'
-				return (False, devProps, errorDict)
-		else:
-			devProps['darwinSite']='https://lite.realtime.nationalrail.co.uk/OpenLDBWS/wsdl.aspx'
-
 		if 'createMaps' in devProps:
 			if devProps['createMaps']:
 				# Check image file name
@@ -750,7 +735,6 @@ class Plugin(indigo.PluginBase):
 
 		# Get configuration
 		apiKey = self.pluginPrefs.get('darwinAPI', 'NO KEY')
-		dawinURL = self.pluginPrefs.get('darwinSite', 'No URL')
 		stationImage = self.pluginPrefs.get('createMaps', "true")
 		refreshFreq = int(self.pluginPrefs.get('updateFreq','60'))
 
@@ -825,7 +809,7 @@ class Plugin(indigo.PluginBase):
 					dev.updateStateOnServer('destinationCRS',value = dev.pluginProps['destinationCode'])
 
 					# Update the device with the latest information
-					deviceRefresh = routeUpdate(dev, runtime_config.api_key, runtime_config.darwin_url, self.paths, self.plugin_logger, self.pluginPrefs)
+					deviceRefresh = routeUpdate(dev, runtime_config.api_key, self.paths, self.plugin_logger, self.pluginPrefs)
 
 					if not deviceRefresh:
 						# Update failed - probably due to SOAP server timeout

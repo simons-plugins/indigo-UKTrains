@@ -221,13 +221,10 @@ def _process_train_services(
 	for train_num, destination in enumerate(services[:constants.MAX_TRAINS_TRACKED], start=1):
 		# Debug logging removed - use plugin instance logger instead
 
-		# Fetch full service details from Darwin API
-		service = _fetch_service_details(session, destination.service_id)
-		if service is None:
-			# API call failed, skip this service but continue with others
-			continue
-
-		# Successfully fetched at least one service
+		# Calling points are inline on the ServiceItem (GetDepBoardWithDetails),
+		# so the destination object also serves as the service for the rest
+		# of the per-train processing — no second API call needed.
+		service = destination
 		departures_found = True
 
 		# Update device states for this train

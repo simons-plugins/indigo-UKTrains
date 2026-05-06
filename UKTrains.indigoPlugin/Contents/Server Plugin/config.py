@@ -38,7 +38,6 @@ class RuntimeConfig:
 	Consolidates all preference reads in one place for efficiency.
 	"""
 	api_key: str
-	darwin_url: str
 	create_images: bool
 	refresh_freq: int
 	color_scheme: 'constants.ColorScheme'  # Forward reference
@@ -55,7 +54,6 @@ class RuntimeConfig:
 		"""
 		return cls(
 			api_key=prefs.get('darwinAPI', 'NO KEY'),
-			darwin_url=prefs.get('darwinSite', 'https://lite.realtime.nationalrail.co.uk/OpenLDBWS/wsdl.aspx'),
 			create_images=prefs.get('createMaps', "true") == "true",
 			refresh_freq=int(prefs.get('updateFreq', '60')),
 			color_scheme=constants.ColorScheme(
@@ -146,10 +144,10 @@ class PluginPaths:
 if BaseModel is not None:
 	class DarwinAPIConfig(BaseModel):
 		"""Configuration for Darwin API access"""
-		api_key: str = Field(min_length=10, description="Darwin API key")
-		wsdl_url: str = Field(
-			default="https://lite.realtime.nationalrail.co.uk/OpenLDBWS/wsdl.aspx",
-			description="Darwin WSDL endpoint"
+		api_key: str = Field(min_length=10, description="Darwin LDBWS consumer key")
+		base_url: str = Field(
+			default="https://api1.raildata.org.uk/1010-live-departure-board-dep1_2/LDBWS/api/20220120",
+			description="Rail Data Marketplace LDBWS REST base URL"
 		)
 
 		@field_validator('api_key')
@@ -209,7 +207,8 @@ if BaseModel is not None:
 			return cls(
 				darwin=DarwinAPIConfig(
 					api_key=prefs.get('darwinAPI', 'NO KEY'),
-					wsdl_url=prefs.get('darwinSite', 'https://lite.realtime.nationalrail.co.uk/OpenLDBWS/wsdl.aspx')
+					base_url=prefs.get('darwinBaseUrl',
+						'https://api1.raildata.org.uk/1010-live-departure-board-dep1_2/LDBWS/api/20220120')
 				),
 				update=UpdateConfig(
 					frequency_seconds=int(prefs.get('updateFreq', 60))

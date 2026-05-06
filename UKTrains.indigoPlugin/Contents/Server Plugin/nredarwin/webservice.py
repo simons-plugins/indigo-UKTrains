@@ -1,763 +1,341 @@
-from zeep import Client
-from zeep.transports import Transport
-from zeep.exceptions import Fault as WebFault
-from zeep.plugins import HistoryPlugin
-from requests import Session
-from functools import partial
+"""
+Darwin LDBWS REST client.
+
+Replaces the legacy SOAP/zeep client with the Rail Data Marketplace JSON API.
+Authenticates via the `x-apikey` header against api1.raildata.org.uk.
+
+The wrapper classes (`StationBoard`, `ServiceItem`, `ServiceLocation`,
+`ServiceDetails`, `CallingPoint`, `CallingPointList`) preserve the public
+attribute surface the rest of the plugin reads, so `device_manager.py` and
+`plugin.py` keep working with minimal change.
+"""
+import json
 import logging
 import os
+import urllib.error
+import urllib.parse
+import urllib.request
+from typing import Any, Optional
+
 
 log = logging.getLogger(__name__)
-# TODO - timeouts and error handling
-DARWIN_WEBSERVICE_NAMESPACE = 'http://thalesgroup.com/RTTI/2010-11-01/ldb/commontypes'
 
-
-class DarwinLdbSession(object):
-    """
-    A connection to the Darwin LDB web service
-    """
-
-    def __init__(self, wsdl=None, api_key=None, timeout=5):
-        """
-        Constructor
-
-        Keyword arguments:
-        wsdl -- the URL of the Darwin LDB WSDL document. Will fall back to
-        using the DARWIN_WEBSERVICE_WSDL environment variable if not supplied
-        api_key -- a valid API key for the Darwin LDB webservice. Will fall
-        back to the DARWIN_WEBSERVICE_API_KEY if not supplied
-        timeout -- a timeout in seconds for calls to the LDB Webservice
-        (default 5)
-        """
-        if not wsdl:
-            wsdl = os.environ['DARWIN_WEBSERVICE_WSDL']
-        if not api_key:
-            api_key = os.environ['DARWIN_WEBSERVICE_API_KEY']
-
-        # Create requests session with timeout
-        session = Session()
-        session.verify = True
-        transport = Transport(session=session, timeout=timeout, operation_timeout=timeout)
-
-        # Create history plugin for debugging (optional)
-        history = HistoryPlugin()
-
-        # Create ZEEP client
-        self._soap_client = Client(
-            wsdl,
-            transport=transport,
-            plugins=[history]
-        )
-
-        # Build SOAP header for Darwin API authentication
-        # Darwin uses AccessToken with TokenValue in specific namespace
-        from zeep import xsd
-
-        # Create header elements
-        header = xsd.Element(
-            '{' + DARWIN_WEBSERVICE_NAMESPACE + '}AccessToken',
-            xsd.ComplexType([
-                xsd.Element(
-                    '{' + DARWIN_WEBSERVICE_NAMESPACE + '}TokenValue',
-                    xsd.String()
-                )
-            ])
-        )
-
-        # Create header value
-        header_value = header(TokenValue=api_key)
-
-        # Store for use in requests
-        self._soap_headers = header_value
-        self._history = history
-
-    def _base_query(self):
-        # ZEEP 4.x: Access service 'ldb' and bind to port 'LDBServiceSoap'
-        # The Darwin WSDL defines service 'ldb' with port 'LDBServiceSoap'
-        return self._soap_client.bind('ldb', 'LDBServiceSoap')
-
-    def get_station_board(
-        self,
-        crs,
-        rows=100,
-        include_departures=True,
-        include_arrivals=False,
-        destination_crs=None,
-        origin_crs=None
-    ):
-        """
-        Query the darwin webservice to obtain a board for a particular station
-        and return a StationBoard instance
-
-        Positional arguments:
-        crs -- the three letter CRS code of a UK station
-
-        Keyword arguments:
-        rows -- the number of rows to retrieve (default 10)
-        include_departures -- include departing services in the departure board
-        (default True)
-        include_arrivals -- include arriving services in the departure board
-        (default False)
-        destination_crs -- filter results so they only include services
-        calling at a particular destination (default None)
-        origin_crs -- filter results so they only include services
-        originating from a particular station (default None)
-        """
-        # Determine the darwn query we want to make
-        if include_departures and include_arrivals:
-            query_type = 'GetArrivalDepartureBoard'
-        elif include_departures:
-            query_type = 'GetDepartureBoard'
-        elif include_arrivals:
-            query_type = 'GetArrivalBoard'
-        else:
-            raise ValueError(
-                "get_station_board must have either include_departures or \
-include_arrivals set to True"
-            )
-        # build a query function - ZEEP uses getattr to access operations
-        service_binding = self._base_query()
-        query_method = getattr(service_binding, query_type)
-        q = partial(query_method, crs=crs, numRows=rows, _soapheaders=[self._soap_headers])
-        if destination_crs:
-            if origin_crs:
-                log.warning(
-                    "Station board query can only filter on one of \
-destination_crs and origin_crs, using only destination_crs"
-                )
-            q = partial(q, filterCrs=destination_crs, filterType='to')
-        elif origin_crs:
-            q = partial(q, filterCrs=origin_crs, filterType='from')
-        try:
-            soap_response = q()
-        except WebFault:
-            raise WebServiceError
-        return StationBoard(soap_response)
-
-    def get_service_details(self, service_id):
-        """
-        Get the details of an individual service and return a ServiceDetails
-        instance.
-
-        Positional arguments:
-        service_id: A Darwin LDB service id
-        """
-        service_binding = self._base_query()
-        service_query = service_binding.GetServiceDetails
-        try:
-            soap_response = service_query(
-                serviceID=service_id,
-                _soapheaders=[self._soap_headers]
-            )
-        except WebFault:
-            raise WebServiceError
-        return ServiceDetails(soap_response)
-
-
-class SoapResponseBase(object):
-
-    def __init__(self, soap_response):
-        for dest_key, src_key in self.__class__.field_mapping:
-            try:
-                val = getattr(soap_response, src_key)
-            except AttributeError:
-                val = None
-            setattr(self, '_' + dest_key, val)
-
-
-class StationBoard(SoapResponseBase):
-    """
-    An abstract representation of a station departure board
-    """
-
-    field_mapping = [
-        ('generated_at', 'generatedAt'),
-        ('crs', 'crs'),
-        ('location_name', 'locationName'),
-    ]
-
-    service_lists = [
-        ('train_services', 'trainServices'),
-        ('bus_services', 'busServices'),
-        ('ferry_services', 'ferryServices')
-    ]
-
-    def __init__(self, soap_response, *args, **kwargs):
-        super(StationBoard, self).__init__(soap_response, *args, **kwargs)
-        # populate service lists - these are specific to station board
-        # objects, so not included in base class
-        for dest_key, src_key in self.__class__.service_lists:
-            try:
-                service_rows = getattr(
-                    getattr(soap_response, src_key),
-                    'service'
-                )
-            except AttributeError:
-                setattr(self, '_' + dest_key, [])
-                continue
-
-            setattr(
-                self,
-                '_' + dest_key,
-                [ServiceItem(s) for s in service_rows]
-            )
-        # populate nrcc_messages
-        if hasattr(soap_response, 'nrccMessages') and \
-           hasattr(soap_response.nrccMessages, 'message'):
-            # TODO - would be nice to strip HTML from these, especially as
-            # it's not compliant with modern standards
-            self._nrcc_messages = soap_response.nrccMessages.message
-        else:
-            self._nrcc_messages = []
-
-    @property
-    def generated_at(self):
-        """
-        The time at which the station board was generated.
-        """
-        return self._generated_at
-
-    @property
-    def crs(self):
-        """
-        The CRS code for the station.
-        """
-        return self._crs
-
-    @property
-    def location_name(self):
-        """
-        The name of the station.
-        """
-        return self._location_name
-
-    @property
-    def train_services(self):
-        """
-        A list of train services that appear on this board. Empty if there are
-        none
-        """
-        return self._train_services
-
-    @property
-    def bus_services(self):
-        """
-        A list of bus services that appear on this board. Empty if there are
-        none
-        """
-        return self._bus_services
-
-    @property
-    def ferry_services(self):
-        """
-        A list of ferry services that appear on this board. Empty if there are
-        none
-        """
-        return self._ferry_services
-
-    @property
-    def nrcc_messages(self):
-        """
-        An optional list of important messages that should be displayed with
-        the station board. Messages may include HTML hyperlinks and
-        paragraphs
-        """
-        return self._nrcc_messages
-
-    def __str__(self):
-        return "%s - %s" % (self.crs, self.location_name)
-
-
-class ServiceDetailsBase(SoapResponseBase):
-    # The generic stuff that both service details classes have
-    field_mapping = [
-        ('sta', 'sta'),
-        ('eta', 'eta'),
-        ('std', 'std'),
-        ('etd', 'etd'),
-        ('platform', 'platform'),
-        ('operator_name', 'operator'),
-        ('operator_code', 'operatorCode'),
-    ]
-
-    @property
-    def scheduled_arrival(self):
-        raise NotImplementedError()
-
-    @property
-    def estimated_arrival(self):
-        raise NotImplementedError()
-
-    @property
-    def scheduled_departure(self):
-        raise NotImplementedError()
-
-    @property
-    def estimated_departure(self):
-        raise NotImplementedError()
-
-    @property
-    def sta(self):
-        """
-        Scheduled Time of Arrival. This is optional and may be present for
-        station boards which include arrivals.
-
-        This is a human readable string rather than a proper datetime object
-        and may not be a time at all
-        """
-        return self._sta
-
-    @property
-    def eta(self):
-        """
-        Estimated Time of Arrival. This is optional and may be present when an
-        sta (Scheduled Time of Arrival) is available.
-
-        This is a human readable string rather than a proper datetime object
-        and may not be a time at all
-        """
-        return self._eta
-
-    @property
-    def std(self):
-        """
-        Scheduled Time of Departure. This is optional and may be present for
-        station boards which include departures
-
-        This is a human readable string rather than a proper datetime object
-        and may not be a time at all
-        """
-        return self._std
-
-    @property
-    def etd(self):
-        """
-        Estimated Time of Departure. This is optional and may be present for
-        results which contain an std (Scheduled Time of Departure)
-
-        This is a human readable string rather than a proper datetime object
-        and may not be a time at all
-        """
-        return self._etd
-
-    @property
-    def platform(self):
-        """
-        The platform number for the service at this station. Optional.
-        """
-        return self._platform
-
-    @property
-    def operator_name(self):
-        """
-        The name of the train operator
-        """
-        return self._operator_name
-
-    @property
-    def operator_code(self):
-        """
-        The National Rail abbreviation for the train operator
-        """
-        return self._operator_code
-
-    # TODO -Adhoc alerts, datetime inflators - if possible
-
-
-class ServiceItem(ServiceDetailsBase):
-    """
-    A single service from a bus, train or ferry departure/arrival board
-    """
-
-    field_mapping = ServiceDetailsBase.field_mapping + [
-        ('is_circular_route', 'isCircularRoute'),
-        ('service_id', 'serviceID'),
-    ]
-
-    def __init__(self, soap_data, *args, **kwargs):
-        super(ServiceItem, self).__init__(soap_data, *args, **kwargs)
-
-        # handle service location lists - these should be empty lists if there
-        # are no locations
-        self._origins = list()
-        self._destinations = list()
-        if hasattr(soap_data.origin, 'location'):
-            for orig_loc in soap_data.origin.location:
-                self._origins.append(ServiceLocation(orig_loc))
-            for dst_loc in soap_data.destination.location:
-                self._destinations.append(ServiceLocation(dst_loc))
-
-    @property
-    def is_circular_route(self):
-        """
-        If True this service is following a circular route and will call again
-        at this station.
-        """
-        return self._is_circular_route
-
-    @property
-    def service_id(self):
-        """
-        The unique ID of this service. This ID is specific to the Darwin LDB
-        Service
-        """
-        return self._service_id
-
-    @property
-    def origins(self):
-        """
-        A list of ServiceLocation objects describing the origins of this
-        service. A service may have more than multiple origins.
-        """
-        return self._origins
-
-    @property
-    def destinations(self):
-        """
-        A list of ServiceLocation objects describing the destinations of this
-        service. A service may have more than multiple destinations.
-        """
-        return self._destinations
-
-    @property
-    def destination_text(self):
-        """
-        Human readable string describing the destination(s) of this service
-        """
-        return self._location_formatter(self.destinations)
-
-    @property
-    def origin_text(self):
-        """
-        Human readable string describing the origin(s) of this service
-        """
-        return self._location_formatter(self.origins)
-
-    def _location_formatter(self, location_list):
-        return ", ".join([str(l) for l in location_list])
-
-    def __str__(self):
-        return "Service %s" % (self.service_id)
-
-
-class ServiceLocation(SoapResponseBase):
-    """
-    A single location from a service origin/destination list
-    """
-    field_mapping = [
-        ('location_name', 'locationName'),
-        ('crs', 'crs'),
-        ('via', 'via'),
-        ('future_change_to', 'futureChangeTo')
-    ]
-
-    @property
-    def location_name(self):
-        """
-        Location name
-        """
-        return self._location_name
-
-    @property
-    def crs(self):
-        """
-        The CRS code of the location
-        """
-        return self._crs
-
-    @property
-    def via(self):
-        """
-        An optional string that should be displayed alongside the
-        location_name. This provides additional context regarding an
-        ambiguous route.
-        """
-        return self._via
-
-    @property
-    def future_change_to(self):
-        """
-        An optional string that indicates a service type (Bus/Ferry/Train)
-        which will replace the current service type in the future.
-        """
-        return self._future_change_to
-
-    def __str__(self):
-        if self.via:
-            return "%s %s" % (self.location_name, self.via)
-        else:
-            return self.location_name
-
-
-class ServiceDetails(ServiceDetailsBase):
-    """
-    In depth details of a single service
-    """
-
-    field_mapping = ServiceDetailsBase.field_mapping + [
-        ('is_cancelled', 'isCancelled'),
-        ('disruption_reason', 'disruptionReason'),
-        ('overdue_message', 'overdueMessage'),
-        ('ata', 'ata'),
-        ('atd', 'atd'),
-        ('location_name', 'locationName'),
-        ('crs', 'crs'),
-    ]
-
-    def __init__(self, soap_data, *args, **kwargs):
-        super(ServiceDetails, self).__init__(soap_data, *args, **kwargs)
-        self._previous_calling_point_lists = self._calling_point_lists(
-            soap_data,
-            'previousCallingPoints'
-        )
-        self._subsequent_calling_point_lists = self._calling_point_lists(
-            soap_data,
-            'subsequentCallingPoints'
-        )
-
-    def _calling_point_lists(self, soap_data, src_key):
-        try:
-            calling_points = getattr(
-                getattr(soap_data, src_key),
-                'callingPointList'
-            )
-        except AttributeError:
-            return []
-        lists = []
-        for sublist in calling_points:
-            lists.append(CallingPointList(sublist))
-        return lists
-
-    @property
-    def is_cancelled(self):
-        """
-        True if this service is cancelled at this location.
-        """
-        return self._is_cancelled
-
-    @property
-    def disruption_reason(self):
-        """
-        A string containing a disruption reason for this service, if it is
-        delayed or cancelled.
-        """
-        return self._disruption_reason
-
-    @property
-    def overdue_message(self):
-        """
-        A string that describes an overdue event
-        """
-        return self._overdue_message
-
-    @property
-    def ata(self):
-        """
-        Actual Time of Arrival.
-
-        A human readable string, not guaranteed to be a machine-parsable time
-        """
-        return self._ata
-
-    @property
-    def atd(self):
-        """
-        Actual Time of Departure.
-
-        A human readable string, not guaranteed to be a machine-parsable time
-        """
-        return self._atd
-
-    @property
-    def location_name(self):
-        """
-        Location Name
-
-        The name of the location from which the details of this service are
-        being accessed and to which the service attributes such as times
-        correspond.
-        """
-        return self._location_name
-
-    @property
-    def crs(self):
-        """
-        The CRS code corresponding to the location_name property.
-        """
-        return self._crs
-
-    @property
-    def previous_calling_point_lists(self):
-        """
-        A list of CallingPointLists.
-
-        The first CallingPointList is all the calling points of the through
-        train from its origin up until immediately before here, with any
-        additional CallingPointLIsts (if they are present) containing the
-        calling points of associated trains which join the through train from
-        their respective origins through to the calling point at which they
-        join with the through train.
-        """
-        return self._previous_calling_point_lists
-
-    @property
-    def subsequent_calling_point_lists(self):
-        """
-        A list of CallingPointLists.
-
-        The first CallingPointList is all the calling points of the through
-        train after here until its destination, with any additional
-        CallingPointLists (if they are present) containing the calling points
-        of associated trains which split from the through train from the
-        calling point at which they split off from the through train until
-        their respective destinations.
-        """
-        return self._subsequent_calling_point_lists
-
-    @property
-    def previous_calling_points(self):
-        """
-        A list of CallingPoint objects.
-
-        This is the list of all previous calling points for the service,
-        including all associated services if multiple services join together
-        to form this service.
-        """
-        calling_points = list()
-        for cpl in self._previous_calling_point_lists:
-            calling_points += cpl.calling_points
-        return calling_points
-
-    @property
-    def subsequent_calling_points(self):
-        """
-        A list of CallingPoint objects.
-
-        This is the list of all subsequent calling points for the service,
-        including all associated services if the service splits into multiple
-        services.
-        """
-        calling_points = list()
-        for cpl in self._subsequent_calling_point_lists:
-            calling_points += cpl.calling_points
-        return calling_points
-
-
-class CallingPoint(SoapResponseBase):
-    """A single calling point on a train route"""
-    field_mapping = [
-        ('location_name', 'locationName'),
-        ('crs', 'crs'),
-        ('et', 'et'),
-        ('at', 'at'),
-        ('st', 'st')
-    ]
-
-    @property
-    def location_name(self):
-        """
-        Location name
-        """
-        return self._location_name
-
-    @property
-    def crs(self):
-        """
-        The CRS code for this location
-        """
-        return self._crs
-
-    @property
-    def at(self):
-        """
-        Actual time
-
-        Human readable string, no guaranteed format
-        """
-        return self._at
-
-    @property
-    def et(self):
-        """
-        Estimated time
-
-        Human readable string, no guaranteed format
-        """
-        return self._et
-
-    @property
-    def st(self):
-        """
-        Scheduled time
-
-        Human readable string, no guaranteed format
-        """
-        return self._st
-
-
-class CallingPointList(SoapResponseBase):
-    """ A list of calling points"""
-    field_mapping = [
-        ('service_type', '_serviceType'),
-        ('service_change_required', '_serviceChangeRequired'),
-        ('association_is_cancelled', '_assocIsCancelled'),
-    ]
-
-    def __init__(self, soap_data, *args, **kwargs):
-        super(CallingPointList, self).__init__(soap_data, *args, **kwargs)
-        self._calling_points = self._calling_point_list(
-            soap_data,
-            'callingPoint'
-        )
-
-    def _calling_point_list(self, soap_data, src_key):
-        try:
-            calling_points = getattr(soap_data, src_key)
-        except AttributeError:
-            return []
-        calling_points_list = []
-        for point in calling_points:
-            calling_points_list.append(CallingPoint(point))
-        return calling_points_list
-
-    @property
-    def calling_points(self):
-        """
-        List of CallingPoint objects
-
-        All the calling points contained within this calling point list
-        """
-        return self._calling_points
-
-    @property
-    def service_type(self):
-        """
-        Service type
-
-        The service type of the service with these calling points (e.g.
-        "train")
-        """
-        return self._service_type
-
-    @property
-    def service_change_required(self):
-        """
-        Service change required
-
-        A boolean indicating whether a change is required between the through
-        service and the service to these calling points.
-        """
-        return self._service_change_required
-
-    @property
-    def association_is_cancelled(self):
-        """
-        Association is cancelled
-
-        A boolean indicating whether this association is cancelled.
-        """
-        return self._association_is_cancelled
+DARWIN_REST_BASE_URL_DEFAULT = (
+    'https://api1.raildata.org.uk/1010-live-departure-board-dep1_2/LDBWS/api/20220120'
+)
 
 
 class WebServiceError(Exception):
-    pass
+    """Raised for any HTTP / network / response error from the LDBWS REST API."""
+
+
+class DarwinLdbSession:
+    """REST connection to the Rail Data Marketplace LDBWS service."""
+
+    def __init__(self, api_key: Optional[str] = None,
+                 base_url: Optional[str] = None,
+                 timeout: int = 10):
+        if api_key is None:
+            api_key = os.environ.get('DARWIN_API_KEY') \
+                or os.environ.get('DARWIN_WEBSERVICE_API_KEY')
+        if not api_key:
+            raise WebServiceError('Darwin API key is required')
+        if base_url is None:
+            base_url = os.environ.get('DARWIN_REST_BASE_URL') \
+                or DARWIN_REST_BASE_URL_DEFAULT
+
+        self._api_key = api_key
+        self._base_url = base_url.rstrip('/')
+        self._timeout = timeout
+
+    def _get(self, path: str, params: Optional[dict] = None) -> dict:
+        url = f'{self._base_url}/{path.lstrip("/")}'
+        if params:
+            cleaned = {k: v for k, v in params.items() if v is not None}
+            if cleaned:
+                url = f'{url}?{urllib.parse.urlencode(cleaned)}'
+
+        req = urllib.request.Request(
+            url,
+            headers={
+                'x-apikey': self._api_key,
+                'Accept': 'application/json',
+                # Apigee at api1.raildata.org.uk rejects the default
+                # `Python-urllib/x.y` agent with 403; send a plain UA.
+                'User-Agent': 'UKTrains-IndigoPlugin/2026.1',
+            },
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=self._timeout) as resp:
+                body = resp.read()
+        except urllib.error.HTTPError as e:
+            detail = ''
+            try:
+                detail = e.read().decode('utf-8', errors='replace')[:200]
+            except Exception:
+                pass
+            raise WebServiceError(
+                f'Darwin REST {e.code} {e.reason}: {detail}'
+            ) from e
+        except urllib.error.URLError as e:
+            raise WebServiceError(f'Darwin REST network error: {e.reason}') from e
+        try:
+            return json.loads(body.decode('utf-8'))
+        except (ValueError, UnicodeDecodeError) as e:
+            raise WebServiceError(f'Darwin REST returned non-JSON body: {e}') from e
+
+    def get_station_board(self, crs, rows=10, include_departures=True,
+                          include_arrivals=False, destination_crs=None,
+                          origin_crs=None):
+        """Fetch a station departure/arrival board with calling points inline.
+
+        Uses `GetDepBoardWithDetails` so subsequent calling points arrive in
+        the same request — no separate `GetServiceDetails` call needed.
+        """
+        if include_departures and include_arrivals:
+            endpoint = 'GetArrDepBoardWithDetails'
+        elif include_arrivals:
+            endpoint = 'GetArrBoardWithDetails'
+        else:
+            endpoint = 'GetDepBoardWithDetails'
+
+        params = {'numRows': rows}
+        if destination_crs:
+            params['filterCrs'] = destination_crs
+            params['filterType'] = 'to'
+        elif origin_crs:
+            params['filterCrs'] = origin_crs
+            params['filterType'] = 'from'
+
+        data = self._get(f'{endpoint}/{urllib.parse.quote(crs, safe="")}', params)
+        return StationBoard(data)
+
+    def get_service_details(self, service_id):
+        """Fetch detailed info for one service.
+
+        Note: the basic "Live Departure Board" raildata product does not include
+        this endpoint — `get_station_board` already returns calling points
+        inline via `GetDepBoardWithDetails`. This method remains for callers
+        that have subscribed to a fuller LDBWS product.
+        """
+        data = self._get(f'GetServiceDetails/{urllib.parse.quote(service_id, safe="")}')
+        return ServiceDetails(data)
+
+
+class _JsonBacked:
+    """Read-only wrapper around a parsed JSON object."""
+
+    def __init__(self, data: Optional[dict]):
+        self._data = data or {}
+
+
+class StationBoard(_JsonBacked):
+    """A station departure (or arrival) board."""
+
+    @property
+    def generated_at(self):
+        return self._data.get('generatedAt')
+
+    @property
+    def crs(self):
+        return self._data.get('crs')
+
+    @property
+    def location_name(self):
+        return self._data.get('locationName')
+
+    @property
+    def train_services(self):
+        return [ServiceItem(s) for s in self._data.get('trainServices') or []]
+
+    @property
+    def bus_services(self):
+        return [ServiceItem(s) for s in self._data.get('busServices') or []]
+
+    @property
+    def ferry_services(self):
+        return [ServiceItem(s) for s in self._data.get('ferryServices') or []]
+
+    @property
+    def nrcc_messages(self):
+        # JSON shape: array of {Value: "...", severity?: "..."}
+        out = []
+        for msg in self._data.get('nrccMessages') or []:
+            if isinstance(msg, dict):
+                out.append(msg.get('Value') or msg.get('value') or '')
+            else:
+                out.append(msg)
+        return out
+
+    def __str__(self):
+        return f'{self.crs} - {self.location_name}'
+
+
+class _ServiceCommon(_JsonBacked):
+    """Fields shared by `ServiceItem` and `ServiceDetails`."""
+
+    @property
+    def sta(self): return self._data.get('sta')
+    @property
+    def eta(self): return self._data.get('eta')
+    @property
+    def std(self): return self._data.get('std')
+    @property
+    def etd(self): return self._data.get('etd')
+    @property
+    def platform(self): return self._data.get('platform')
+    @property
+    def operator_name(self): return self._data.get('operator')
+    @property
+    def operator_code(self): return self._data.get('operatorCode')
+    @property
+    def is_cancelled(self): return bool(self._data.get('isCancelled'))
+
+
+class ServiceItem(_ServiceCommon):
+    """A single service from a board.
+
+    With `GetDepBoardWithDetails` this also exposes inline calling points,
+    so callers can read `subsequent_calling_points` directly without a
+    separate `GetServiceDetails` round-trip.
+    """
+
+    @property
+    def is_circular_route(self):
+        return bool(self._data.get('isCircularRoute'))
+
+    @property
+    def service_id(self):
+        return self._data.get('serviceID') or self._data.get('serviceId')
+
+    @property
+    def origins(self):
+        return [ServiceLocation(o) for o in self._data.get('origin') or []]
+
+    @property
+    def destinations(self):
+        return [ServiceLocation(d) for d in self._data.get('destination') or []]
+
+    @property
+    def destination_text(self):
+        return ', '.join(str(d) for d in self.destinations)
+
+    @property
+    def origin_text(self):
+        return ', '.join(str(o) for o in self.origins)
+
+    @property
+    def subsequent_calling_point_lists(self):
+        return [CallingPointList(cpl)
+                for cpl in self._data.get('subsequentCallingPoints') or []]
+
+    @property
+    def previous_calling_point_lists(self):
+        return [CallingPointList(cpl)
+                for cpl in self._data.get('previousCallingPoints') or []]
+
+    @property
+    def subsequent_calling_points(self):
+        out = []
+        for cpl in self.subsequent_calling_point_lists:
+            out.extend(cpl.calling_points)
+        return out
+
+    @property
+    def previous_calling_points(self):
+        out = []
+        for cpl in self.previous_calling_point_lists:
+            out.extend(cpl.calling_points)
+        return out
+
+    def __str__(self):
+        return f'Service {self.service_id}'
+
+
+class ServiceLocation(_JsonBacked):
+    @property
+    def location_name(self): return self._data.get('locationName')
+    @property
+    def crs(self): return self._data.get('crs')
+    @property
+    def via(self): return self._data.get('via')
+    @property
+    def future_change_to(self): return self._data.get('futureChangeTo')
+
+    def __str__(self):
+        name = self.location_name or ''
+        return f'{name} {self.via}' if self.via else name
+
+
+class ServiceDetails(_ServiceCommon):
+    """Full service-detail response (legacy `GetServiceDetails`)."""
+
+    @property
+    def disruption_reason(self): return self._data.get('disruptionReason')
+    @property
+    def overdue_message(self): return self._data.get('overdueMessage')
+    @property
+    def ata(self): return self._data.get('ata')
+    @property
+    def atd(self): return self._data.get('atd')
+    @property
+    def location_name(self): return self._data.get('locationName')
+    @property
+    def crs(self): return self._data.get('crs')
+
+    @property
+    def previous_calling_point_lists(self):
+        return [CallingPointList(cpl)
+                for cpl in self._data.get('previousCallingPoints') or []]
+
+    @property
+    def subsequent_calling_point_lists(self):
+        return [CallingPointList(cpl)
+                for cpl in self._data.get('subsequentCallingPoints') or []]
+
+    @property
+    def previous_calling_points(self):
+        out = []
+        for cpl in self.previous_calling_point_lists:
+            out.extend(cpl.calling_points)
+        return out
+
+    @property
+    def subsequent_calling_points(self):
+        out = []
+        for cpl in self.subsequent_calling_point_lists:
+            out.extend(cpl.calling_points)
+        return out
+
+
+class CallingPointList(_JsonBacked):
+    @property
+    def service_type(self):
+        return self._data.get('serviceType') or self._data.get('_serviceType')
+
+    @property
+    def service_change_required(self):
+        return bool(self._data.get('serviceChangeRequired')
+                    or self._data.get('_serviceChangeRequired'))
+
+    @property
+    def association_is_cancelled(self):
+        return bool(self._data.get('assocIsCancelled')
+                    or self._data.get('_assocIsCancelled'))
+
+    @property
+    def calling_points(self):
+        return [CallingPoint(cp) for cp in self._data.get('callingPoint') or []]
+
+
+class CallingPoint(_JsonBacked):
+    @property
+    def location_name(self): return self._data.get('locationName')
+    @property
+    def crs(self): return self._data.get('crs')
+    @property
+    def at(self): return self._data.get('at')
+    @property
+    def et(self): return self._data.get('et')
+    @property
+    def st(self): return self._data.get('st')

@@ -18,9 +18,9 @@
         <Label>What is your API Key?:</Label>
         <Description>Free key issued at https://raildata.org.uk/ — search for the "Live Departure Board Web Service (LDBWS) - Public" product and subscribe. The token is delivered via email and shown on your dashboard.</Description>
     </Field>
-    <Field id="darwinSite" type="textfield" defaultValue="https://lite.realtime.nationalrail.co.uk/OpenLDBWS/wsdl.aspx">
-        <Label>National Rail access site (do not change unless requested):</Label>
-        <Description>What is the URL of the Darwin Site?</Description>
+    <Field id="darwinBaseUrl" type="textfield" defaultValue="https://api1.raildata.org.uk/1010-live-departure-board-dep1_2/LDBWS/api/20220120" hidden="true">
+        <Label>LDBWS REST base URL (advanced — leave default unless on a different raildata product):</Label>
+        <Description>The Rail Data Marketplace REST base URL. Only change if you've subscribed to a different LDBWS product version.</Description>
     </Field>
     <Field id="updateFreq" type="textfield" defaultValue="60">
         <Label>Time between updates (secs):</Label>

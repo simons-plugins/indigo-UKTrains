@@ -70,7 +70,6 @@ def mock_device():
         enabled=True,
         pluginProps={
             'darwinAPI': 'test_api_key_12345',
-            'darwinSite': 'https://lite.realtime.nationalrail.co.uk/OpenLDBWS/wsdl.aspx',
             'stationImage': True,
             'updateFreq': 60,
             'imageFilename': '/tmp/test_images',
@@ -177,7 +176,6 @@ def mock_plugin_prefs():
     """
     return {
         'darwinAPI': 'test_api_key',
-        'darwinSite': 'https://lite.realtime.nationalrail.co.uk/OpenLDBWS/wsdl.aspx',
         'checkboxDebug1': True,
         'updateFreq': '60',
         'createMaps': 'true',
@@ -206,6 +204,12 @@ def mock_plugin_paths(tmp_path):
     fonts_dir.mkdir(parents=True, exist_ok=True)
     image_output_dir.mkdir(parents=True, exist_ok=True)
     log_dir.mkdir(parents=True, exist_ok=True)
+
+    # Image generator reads rendering parameters from this file at every refresh.
+    # Production code writes it from runConcurrentThread, but routeUpdate tests
+    # bypass that loop, so seed it with sensible defaults so image hashing works.
+    parameters_file = plugin_root / "trainparameters.txt"
+    parameters_file.write_text("#0F0,#000,#F00,#0FF,#FFF,9,3,3,720")
 
     # Create the PluginPaths object directly
     paths = plugin.PluginPaths(

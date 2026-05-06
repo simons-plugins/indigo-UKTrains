@@ -35,15 +35,17 @@ The UK Trains plugin connects your Indigo home automation system to the UK Natio
 
 ### Getting a Darwin API Key
 
-National Rail moved API key issuance to the **Rail Data Marketplace** (raildata.org.uk). The legacy OpenLDBWS registration page is no longer available — new keys are only issued via the marketplace, but the SOAP service and token format are unchanged so this plugin works without modification.
+> **Breaking change in 2026.1.0**: this plugin now talks to the LDBWS REST API on the Rail Data Marketplace (`api1.raildata.org.uk`). Legacy SOAP/OpenLDBWS tokens **no longer work** — every user must register at raildata.org.uk and use the consumer key for the LDBWS Public product.
 
 1. Visit [https://raildata.org.uk/](https://raildata.org.uk/) and create an account
-2. Search for the product **"Live Departure Board Web Service (LDBWS) - Public"** (free, "Open by default")
-3. Subscribe to it and accept the licence terms
-4. From your dashboard → **My Subscriptions**, copy the API key issued for that product
-5. Paste it into the plugin's **Darwin API Key** field
+2. In the product catalogue, search for **LDBWS** and subscribe to **"Live Departure Board"** (or any of the LDBWS products)
+3. Accept the licence terms — approval is usually instant for the free open-tier products
+4. From your dashboard, click into the subscribed product and open the **Specification** tab — the **Consumer key** is shown there (this is the API key)
+5. Paste the consumer key into the plugin's **Darwin API Key** field. No other config is needed.
 
-Existing users with a legacy OpenLDBWS token do not need to re-register — your existing key continues to work.
+> Don't pick **Live Fastest Departure Boards** — that's a separate fastest-route product that will not authenticate against the standard departure-board endpoint this plugin uses.
+
+Existing users upgrading from 2026.0.x: replace your old SOAP token with a marketplace consumer key before the new version starts polling, otherwise every fetch will return 401.
 
 ## Configuration
 
@@ -51,8 +53,7 @@ Existing users with a legacy OpenLDBWS token do not need to re-register — your
 
 Open **Plugins → UK Trains → Configure** to set global options:
 
-- **Darwin API Key** - Your API key from National Rail
-- **Darwin WSDL URL** - Leave as default unless using a different endpoint
+- **Darwin API Key** - Your LDBWS consumer key from the Rail Data Marketplace
 - **Update Frequency** - How often to refresh data (30-600 seconds, default: 60)
 - **Create Departure Images** - Generate PNG images of departure boards
 - **Image Output Directory** - Where to save departure board images

@@ -40,20 +40,17 @@ def darwin_api_key():
 
 
 @pytest.fixture
-def darwin_wsdl():
-    """Darwin WSDL URL"""
-    return os.getenv(
-        'DARWIN_WSDL',
-        'https://lite.realtime.nationalrail.co.uk/OpenLDBWS/wsdl.aspx'
-    )
+def darwin_base_url():
+    """LDBWS REST base URL (override via DARWIN_REST_BASE_URL env var)."""
+    from nredarwin.webservice import DARWIN_REST_BASE_URL_DEFAULT
+    return os.getenv('DARWIN_REST_BASE_URL', DARWIN_REST_BASE_URL_DEFAULT)
 
 
 @pytest.fixture
-def live_darwin_session(darwin_api_key, darwin_wsdl):
-    """Create a live Darwin session"""
+def live_darwin_session(darwin_api_key, darwin_base_url):
+    """Create a live Darwin REST session."""
     try:
-        session = DarwinLdbSession(darwin_wsdl, darwin_api_key)
-        return session
+        return DarwinLdbSession(api_key=darwin_api_key, base_url=darwin_base_url)
     except Exception as e:
         pytest.fail(f"Failed to create Darwin session: {e}")
 
@@ -135,25 +132,21 @@ class TestLiveDarwinAPI:
             print("\nNo services currently running on Waterloo to Woking route")
             # This is acceptable - there may not always be services
 
-    def test_get_service_details(self, live_darwin_session):
-        """Test getting detailed service information"""
-        # First get a station board to get a service ID
+    def test_calling_points_inline_on_service(self, live_darwin_session):
+        """Verify calling points arrive inline on each ServiceItem.
+
+        With GetDepBoardWithDetails (the default for the basic LDBWS product),
+        services already include subsequent_calling_points without a second call.
+        """
         board = live_darwin_session.get_station_board('PAD', rows=5)
 
-        if hasattr(board, 'train_services') and board.train_services:
-            service_id = board.train_services[0].service_id
-
-            # Get full service details
-            details = live_darwin_session.get_service_details(service_id)
-
-            # Verify details structure
-            # Note: subsequent_calling_points might be None for some services
-            if hasattr(details, 'subsequent_calling_points'):
-                calling_points = details.subsequent_calling_points
-                if calling_points:
-                    print(f"\nService stops at {len(calling_points)} stations:")
-                    for cp in calling_points[:3]:  # Show first 3
-                        print(f"  - {cp.location_name} at {cp.st}")
+        if board.train_services:
+            service = board.train_services[0]
+            calling_points = service.subsequent_calling_points
+            if calling_points:
+                print(f"\nService stops at {len(calling_points)} stations:")
+                for cp in calling_points[:3]:
+                    print(f"  - {cp.location_name} at {cp.st}")
 
     @pytest.mark.parametrize("crs_code,expected_name", [
         ("PAD", "Paddington"),

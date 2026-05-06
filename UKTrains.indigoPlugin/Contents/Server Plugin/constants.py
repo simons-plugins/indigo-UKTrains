@@ -19,7 +19,9 @@ MIN_UPDATE_FREQ_SECONDS = 30
 MAX_UPDATE_FREQ_SECONDS = 600
 
 # Darwin API configuration
-DARWIN_WSDL_DEFAULT = 'https://lite.realtime.nationalrail.co.uk/OpenLDBWS/wsdl.aspx'
+DARWIN_REST_BASE_URL_DEFAULT = (
+    'https://api1.raildata.org.uk/1010-live-departure-board-dep1_2/LDBWS/api/20220120'
+)
 DARWIN_ROW_LIMIT = 10  # Number of services to request from API
 STATION_CODES_FILE = 'stationCodes.txt'
 
