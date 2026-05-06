@@ -197,11 +197,7 @@ except ImportError as e:
 	indigo.server.log(f"** Couldn't find nredarwin module: {e} - contact developer or check forums for support **", level=logging.CRITICAL)
 	sys.exit(3)
 
-try:
-	from zeep.exceptions import Fault as WebFault
-except ImportError as e:
-	indigo.server.log(f"** Couldn't find zeep module: {e} - check forums for install process for your system **", level=logging.CRITICAL)
-	sys.exit(4)
+from nredarwin.webservice import WebServiceError
 
 try:
 	import functools
@@ -318,8 +314,8 @@ def routeUpdate(dev, apiAccess, paths, logger, plugin_prefs=None):
 	# Fetch station board with optional destination filter
 	try:
 		stationBoardDetails = _fetch_station_board(darwinSession, stationStartCrs, stationEndCrs)
-	except (WebFault, Exception) as e:
-		errorHandler(f'WARNING ** SOAP resolution failed: {e} - will retry later when server less busy **')
+	except (WebServiceError, Exception) as e:
+		errorHandler(f'WARNING ** Darwin REST request failed: {e} - will retry later when server less busy **')
 		return False
 
 	# Update station metadata on device
