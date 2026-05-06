@@ -12,11 +12,11 @@
            type="label"
            fontSize="small"
            fontColor="blue">
-        <Label>You need to have a unique Network Rail API key and enter it here.  Check the manual or forum for details</Label>
+        <Label>You need a free Darwin API key. Subscribe to "Live Departure Board Web Service (LDBWS) - Public" at https://raildata.org.uk/ and paste the key below. (Existing OpenLDBWS keys still work.)</Label>
     </Field>
     <Field id="darwinAPI" type="textfield" defaultValue="NO KEY ENTERED">
         <Label>What is your API Key?:</Label>
-        <Description>Enter your API key - you can get one for free from Network Rail (see forum)?</Description>
+        <Description>Free key issued at https://raildata.org.uk/ — search for the "Live Departure Board Web Service (LDBWS) - Public" product and subscribe. The token is delivered via email and shown on your dashboard.</Description>
     </Field>
     <Field id="darwinSite" type="textfield" defaultValue="https://lite.realtime.nationalrail.co.uk/OpenLDBWS/wsdl.aspx">
         <Label>National Rail access site (do not change unless requested):</Label>

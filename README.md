@@ -24,7 +24,7 @@ The UK Trains plugin connects your Indigo home automation system to the UK Natio
 
 - **Indigo 2023.2 or later** (macOS)
 - **Python 3.10+** (included with Indigo 2023+)
-- **Darwin API Key** (free registration at [National Rail Developers Portal](https://www.nationalrail.co.uk/developers/))
+- **Darwin API Key** (free registration via the [Rail Data Marketplace](https://raildata.org.uk/))
 
 ## Installation
 
@@ -35,11 +35,15 @@ The UK Trains plugin connects your Indigo home automation system to the UK Natio
 
 ### Getting a Darwin API Key
 
-1. Visit [https://www.nationalrail.co.uk/developers/](https://www.nationalrail.co.uk/developers/)
-2. Click "Register" and create an account
-3. Log in and navigate to "My Account" → "API Keys"
-4. Request a new API key for "Darwin LDB (Live Departure Boards)"
-5. Copy the key and paste it into the plugin configuration
+National Rail moved API key issuance to the **Rail Data Marketplace** (raildata.org.uk). The legacy OpenLDBWS registration page is no longer available — new keys are only issued via the marketplace, but the SOAP service and token format are unchanged so this plugin works without modification.
+
+1. Visit [https://raildata.org.uk/](https://raildata.org.uk/) and create an account
+2. Search for the product **"Live Departure Board Web Service (LDBWS) - Public"** (free, "Open by default")
+3. Subscribe to it and accept the licence terms
+4. From your dashboard → **My Subscriptions**, copy the API key issued for that product
+5. Paste it into the plugin's **Darwin API Key** field
+
+Existing users with a legacy OpenLDBWS token do not need to re-register — your existing key continues to work.
 
 ## Configuration
 
@@ -148,7 +152,7 @@ Display on iPads, dashboards, or control pages using Indigo's control page image
 ### Plugin won't start
 
 - Check **Indigo → Event Log** for error messages
-- Verify Darwin API key is valid (test at [Darwin API Documentation](https://lite.realtime.nationalrail.co.uk/OpenLDBWS/))
+- Verify Darwin API key is valid via your [Rail Data Marketplace](https://raildata.org.uk/) dashboard
 - Ensure Indigo 2023.2+ is installed
 
 ### No train data showing
@@ -156,7 +160,7 @@ Display on iPads, dashboards, or control pages using Indigo's control page image
 - Verify station CRS codes are correct (3 letters, uppercase)
 - Check if station has services at current time (some stations have limited hours)
 - Look for error messages in Indigo Event Log
-- Test API key at National Rail developer portal
+- Test API key from your Rail Data Marketplace subscription page
 
 ### Delays showing incorrectly
 
@@ -233,7 +237,7 @@ This plugin is provided as-is for use with Indigo home automation. Darwin API us
 
 - **Indigo Forums**: [Plugin Support Thread](https://forums.indigodomo.com/)
 - **GitHub Issues**: [Report bugs and request features](https://github.com/simons-plugins/indigo-UKTrains/issues)
-- **Darwin API Support**: [National Rail Developer Portal](https://www.nationalrail.co.uk/developers/)
+- **Darwin API Support**: [Rail Data Marketplace](https://raildata.org.uk/) — host of the LDBWS Public product
 
 ---
 
