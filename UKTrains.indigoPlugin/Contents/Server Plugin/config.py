@@ -28,7 +28,6 @@ class PluginConfig:
 	debug: bool
 	plugin_path: Path
 	station_dict: Dict[str, str]
-	error_log_path: Path
 	pytz_available: bool
 
 
@@ -106,19 +105,11 @@ class PluginPaths:
 		# Ensure image output directory exists
 		image_output.mkdir(parents=True, exist_ok=True)
 
-		# Log directory - find the current Indigo version dynamically
-		perceptive_dir = Path.home() / 'Library' / 'Application Support' / 'Perceptive Automation'
-
-		# Look for Indigo folders (e.g., "Indigo 2023.2", "Indigo 2024.1", etc.)
-		indigo_folders = sorted([d for d in perceptive_dir.glob('Indigo *') if d.is_dir()], reverse=True)
-
-		if indigo_folders:
-			# Use the most recent version folder
-			log_dir = indigo_folders[0] / 'Logs'
-		else:
-			# Fallback to generic Indigo folder if version-specific not found
-			log_dir = perceptive_dir / 'Indigo' / 'Logs'
-
+		# Log directory: ask Indigo for its install folder rather than guessing.
+		# Older code probed `~/Library/Application Support/Perceptive Automation`,
+		# but the real install lives under system `/Library`, not the user home.
+		import indigo  # available at plugin runtime
+		log_dir = Path(indigo.server.getInstallFolderPath()) / 'Logs'
 		log_dir.mkdir(parents=True, exist_ok=True)
 
 		return cls(

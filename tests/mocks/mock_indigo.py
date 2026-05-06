@@ -80,6 +80,9 @@ class MockServer:
         self.getPlugin = Mock(return_value=MagicMock(
             pluginFolderPath='/test/path'
         ))
+        # Mirror indigo.server.getInstallFolderPath() so PluginPaths.initialize
+        # can resolve a log directory in tests without touching the real FS.
+        self.getInstallFolderPath = Mock(return_value='/tmp/test_indigo_install')
 
 
 class MockDict(dict):
