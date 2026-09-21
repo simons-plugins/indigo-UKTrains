@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0">
+    <meta name="indigo-page-name" content="Train Departures">
+    <meta name="indigo-page-icon" content="tram.fill">
+    <meta name="indigo-page-description" content="Live UK rail departure board">
+    <title>Train Departures</title>
+    <style>
+        :root {
+            --bg: #1a1d29; --card: #252938; --text: #fff; --text2: #a0a4b8;
+            --green: #00c853; --amber: #ff6b00; --red: #f44336; --blue: #64b5f6;
+            --platform: #ffc107; --shadow: 0 2px 8px rgba(0,0,0,.3);
+        }
+        @media (prefers-color-scheme: light) {
+            :root {
+                --bg: #f0f2f5; --card: #fff; --text: #1d1d1f; --text2: #6b7280;
+                --shadow: 0 1px 3px rgba(0,0,0,.1);
+            }
+        }
+        * { margin:0; padding:0; box-sizing:border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif;
+            background: var(--bg); color: var(--text);
+            padding: 16px; padding-bottom: 32px;
+            -webkit-text-size-adjust: 100%;
+        }
+
+        /* Header */
+        .header { display:flex; align-items:center; justify-content:space-between; margin-bottom:16px; flex-wrap:wrap; gap:8px; }
+        h1 { font-size:24px; font-weight:700; }
+        .route-select {
+            font-size:15px; padding:8px 12px; border-radius:10px;
+            background: var(--card); color: var(--text); border:1px solid var(--text2);
+            min-width: 200px; appearance: none;
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%23a0a4b8' stroke-width='2' fill='none'/%3E%3C/svg%3E");
+            background-repeat: no-repeat; background-position: right 12px center;
+            padding-right: 32px;
+        }
+        .station-name { font-size:18px; font-weight:600; color:var(--blue); margin-bottom:4px; }
+        .subtitle { font-size:13px; color:var(--text2); margin-bottom:16px; }
+        .status-ok { color:var(--green); }
+        .status-issues { color:var(--amber); }
+
+        /* Station message */
+        .station-msg {
+            background: var(--card); border-radius:10px; padding:12px 14px;
+            margin-bottom:16px; font-size:13px; color:var(--amber);
+            border-left: 3px solid var(--amber); line-height:1.4;
+        }
+
+        /* Loading */
+        .loading { text-align:center; padding:60px 20px; color:var(--text2); }
+        .spinner { width:24px; height:24px; border:3px solid var(--card); border-top-color:var(--blue); border-radius:50%; animation:spin .8s linear infinite; margin:0 auto 12px; }
+        @keyframes spin { to { transform:rotate(360deg); } }
+
+        /* Train rows */
+        .train-list { display:flex; flex-direction:column; gap:10px; }
+        .train {
+            background: var(--card); border-radius:12px; padding:14px 16px;
+            box-shadow: var(--shadow);
+        }
+        .train-top { display:flex; align-items:baseline; justify-content:space-between; gap:8px; flex-wrap:wrap; }
+        .train-time { font-size:22px; font-weight:700; font-variant-numeric:tabular-nums; min-width:55px; }
+        .train-dest { font-size:16px; font-weight:600; flex:1; min-width:0; }
+        .train-status { font-size:14px; font-weight:600; text-align:right; white-space:nowrap; }
+        .train-status.on-time { color: var(--green); }
+        .train-status.delayed { color: var(--amber); }
+        .train-status.cancelled { color: var(--red); }
+        .train-status.early { color: var(--blue); }
+
+        .train-meta { display:flex; gap:12px; margin-top:6px; font-size:13px; color:var(--text2); flex-wrap:wrap; align-items:center; }
+        .platform-badge {
+            background: var(--platform); color:#000; font-weight:700;
+            padding:2px 8px; border-radius:6px; font-size:12px;
+        }
+        .train-op { font-style:italic; }
+        .train-reason { font-size:12px; color:var(--amber); margin-top:4px; }
+
+        /* Calling points */
+        .calling { font-size:12px; color:var(--text2); margin-top:6px; line-height:1.5; }
+        .calling-toggle {
+            font-size:12px; color:var(--blue); cursor:pointer; border:none;
+            background:none; padding:0; margin-top:4px;
+        }
+
+        .last-updated { text-align:center; font-size:12px; color:var(--text2); padding-top:16px; }
+        .empty { text-align:center; padding:40px 20px; color:var(--text2); }
+    </style>
+</head>
+<body>
+    <div id="app">
+        <div class="loading"><div class="spinner"></div><p>Connecting to Indigo...</p></div>
+    </div>
+
+    <script>
+    // ── indigo-api.js V1 (inlined) ──────────────────────────────────────────
+    class IndigoAPI {
+        constructor(config) {
+            const cfg = config || window.INDIGO_CONFIG || IndigoAPI._configFromURL();
+            if (!cfg || !cfg.baseURL || !cfg.apiKey) { this._configured = false; this._showConfigError(); return; }
+            this._configured = true; this._baseURL = cfg.baseURL.replace(/\/+$/, ""); this._apiKey = cfg.apiKey;
+            this._errorHandler = null; this._authFailureHandler = null;
+        }
+        static isConfigured() { const cfg = window.INDIGO_CONFIG || IndigoAPI._configFromURL(); return !!(cfg && cfg.baseURL && cfg.apiKey); }
+        static _configFromURL() { if (typeof location === "undefined") return null; const p = new URLSearchParams(location.search); const k = p.get("api-key"); return k ? { baseURL: location.origin, apiKey: k } : null; }
+        async getDevices() { return this._fetch("/v2/api/indigo.devices"); }
+        async getDevice(id) { return this._fetch(`/v2/api/indigo.devices/${id}`); }
+        async toggle(id) { return this._command(id, "indigo.device.toggle"); }
+        async _post(path, body) { return this._fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }); }
+        async _command(deviceId, message, parameters) { const body = { message, objectId: deviceId }; if (parameters) body.parameters = parameters; return this._post("/v2/api/command", body); }
+        observe(deviceId, callback, intervalMs = 5000) { let last = null; const poll = async () => { try { const d = await this.getDevice(deviceId); const j = JSON.stringify(d); if (j !== last) { last = j; callback(d); } } catch (e) { this._handleError(e); } }; poll(); const t = setInterval(poll, intervalMs); return { stop: () => clearInterval(t) }; }
+        observeAll(callback, intervalMs = 5000) { let last = null; const poll = async () => { try { const d = await this.getDevices(); const j = JSON.stringify(d); if (j !== last) { last = j; callback(d); } } catch (e) { this._handleError(e); } }; poll(); const t = setInterval(poll, intervalMs); return { stop: () => clearInterval(t) }; }
+        onError(cb) { this._errorHandler = cb; }
+        async _fetch(path, options = {}) {
+            if (!this._configured) throw new IndigoAPIError("Not configured", 0);
+            const url = `${this._baseURL}${path}`;
+            const headers = { Authorization: `Bearer ${this._apiKey}`, Accept: "application/json", ...options.headers };
+            let response;
+            try { response = await fetch(url, { ...options, headers }); } catch (err) { const e = new IndigoAPIError("Network error: " + err.message, 0, err); this._handleError(e); throw e; }
+            if (response.status === 401 || response.status === 403) { const e = new IndigoAPIError("Auth failed", response.status); this._handleError(e); throw e; }
+            if (!response.ok) { const t = await response.text().catch(() => ""); const e = new IndigoAPIError(`HTTP ${response.status}`, response.status); this._handleError(e); throw e; }
+            const ct = response.headers.get("Content-Type") || ""; if (!ct.includes("json")) return null;
+            try { return await response.json(); } catch (err) { const e = new IndigoAPIError("Bad JSON", response.status, err); this._handleError(e); throw e; }
+        }
+        _handleError(error) { if (this._errorHandler) { try { this._errorHandler(error); } catch (_) {} } }
+        _showConfigError() { if (typeof document === "undefined") return; const b = document.createElement("div"); b.style.cssText = "position:fixed;top:0;left:0;right:0;padding:12px 16px;background:#dc3545;color:#fff;font:14px/1.4 -apple-system,sans-serif;text-align:center;z-index:99999;"; b.textContent = "Indigo connection not configured."; document.readyState === "loading" ? document.addEventListener("DOMContentLoaded", () => document.body.prepend(b)) : document.body.prepend(b); }
+    }
+    class IndigoAPIError extends Error { constructor(m, s, c) { super(m); this.name = "IndigoAPIError"; this.status = s; if (c) this.cause = c; } }
+    // ── end indigo-api.js ───────────────────────────────────────────────────
+    </script>
+
+    <script>
+    const TRAIN_PLUGIN = "com.simons-plugins.UKTrains";
+    let indigo, routes = [], currentRouteId = null, watcher = null;
+
+    if (typeof IndigoAPI !== "undefined" && IndigoAPI.isConfigured()) {
+        indigo = new IndigoAPI();
+        init();
+    }
+
+    async function init() {
+        // Discover all train route devices
+        const devices = await indigo.getDevices();
+        routes = devices.filter(d => d.pluginId === TRAIN_PLUGIN && d.deviceTypeId === "trainTimetable");
+
+        if (routes.length === 0) {
+            document.getElementById("app").innerHTML = '<p class="empty">No train routes configured in Indigo.</p>';
+            return;
+        }
+
+        // Build the page shell with dropdown
+        currentRouteId = routes[0].id;
+        renderShell();
+        startWatching();
+    }
+
+    function renderShell() {
+        const options = routes.map(r => {
+            const from = (r.states?.stationLong || r.name).trim();
+            const to = (r.states?.destinationLong || "All").trim();
+            const label = `${from} → ${to}`;
+            return `<option value="${r.id}" ${r.id === currentRouteId ? "selected" : ""}>${esc(label)}</option>`;
+        }).join("");
+
+        document.getElementById("app").innerHTML = `
+            <div class="header">
+                <h1>🚆 Departures</h1>
+                <select class="route-select" id="routeSelect" onchange="switchRoute(this.value)">
+                    ${options}
+                </select>
+            </div>
+            <div id="stationName" class="station-name"></div>
+            <div id="subtitle" class="subtitle"></div>
+            <div id="stationMsg"></div>
+            <div id="trainList"></div>
+            <p class="last-updated" id="lastUpdated"></p>`;
+    }
+
+    function switchRoute(id) {
+        currentRouteId = parseInt(id);
+        if (watcher) watcher.stop();
+        startWatching();
+    }
+
+    function startWatching() {
+        watcher = indigo.observe(currentRouteId, renderBoard, 10000);
+    }
+
+    function renderBoard(dev) {
+        const states = dev.states || {};
+        const station = (states.stationLong || "").trim();
+        const dest = (states.destinationLong || "All Destinations").trim();
+        const hasIssues = states.stationIssues;
+        const lastUpdate = states.timeGenerated || "";
+
+        document.getElementById("stationName").textContent = station;
+        document.getElementById("subtitle").innerHTML =
+            `to <strong>${esc(dest)}</strong> — ` +
+            (hasIssues
+                ? '<span class="status-issues">Delays or issues</span>'
+                : '<span class="status-ok">All services on time</span>');
+
+        // Station messages
+        const msgEl = document.getElementById("stationMsg");
+        const rawMsg = states.stationMessages || "";
+        if (rawMsg && rawMsg.length > 5) {
+            // Clean up the raw message format
+            const cleanMsg = rawMsg.replace(/\{.*?'_value_1':\s*'/g, "").replace(/'?\s*\}$/g, "").replace(/\\n/g, " ").trim();
+            if (cleanMsg.length > 3) {
+                msgEl.innerHTML = `<div class="station-msg">${esc(cleanMsg)}</div>`;
+            } else {
+                msgEl.innerHTML = "";
+            }
+        } else {
+            msgEl.innerHTML = "";
+        }
+
+        // Extract trains
+        const trains = [];
+        for (let i = 1; i <= 10; i++) {
+            const sch = states[`train${i}Sch`];
+            if (!sch) continue;
+            trains.push({
+                dest: states[`train${i}Dest`] || "",
+                op: states[`train${i}Op`] || "",
+                sch: sch,
+                est: states[`train${i}Est`] || "",
+                delay: states[`train${i}Delay`] || "",
+                issue: states[`train${i}Issue`] || false,
+                reason: states[`train${i}Reason`] || "",
+                calling: states[`train${i}Calling`] || "",
+                platform: states[`train${i}Platform`] || "",
+            });
+        }
+
+        const listEl = document.getElementById("trainList");
+        if (trains.length === 0) {
+            listEl.innerHTML = '<p class="empty">No departures found</p>';
+        } else {
+            listEl.innerHTML = '<div class="train-list">' + trains.map((t, i) => renderTrain(t, i)).join("") + '</div>';
+        }
+
+        document.getElementById("lastUpdated").textContent = lastUpdate ? `${lastUpdate}` : `Updated ${new Date().toLocaleTimeString()}`;
+    }
+
+    function renderTrain(t, idx) {
+        const statusClass = getStatusClass(t.delay);
+        const estDisplay = t.est === "On time" ? "On time" : t.est === "Cancelled" ? "Cancelled" : t.est || t.delay;
+
+        let meta = "";
+        if (t.platform) meta += `<span class="platform-badge">Plat ${esc(t.platform)}</span>`;
+        if (t.op) meta += `<span class="train-op">${esc(t.op)}</span>`;
+
+        let reason = "";
+        if (t.reason && t.reason !== "No reason provided") {
+            reason = `<div class="train-reason">${esc(t.reason)}</div>`;
+        }
+
+        let calling = "";
+        if (t.calling) {
+            const callingId = `calling-${idx}`;
+            calling = `
+                <button class="calling-toggle" onclick="toggleCalling('${callingId}')">Calling points ▾</button>
+                <div class="calling" id="${callingId}" style="display:none">${esc(t.calling)}</div>`;
+        }
+
+        return `
+            <div class="train">
+                <div class="train-top">
+                    <div class="train-time">${esc(t.sch)}</div>
+                    <div class="train-dest">${esc(t.dest)}</div>
+                    <div class="train-status ${statusClass}">${esc(estDisplay)}</div>
+                </div>
+                <div class="train-meta">${meta}</div>
+                ${reason}
+                ${calling}
+            </div>`;
+    }
+
+    function getStatusClass(delay) {
+        if (!delay) return "";
+        const d = delay.toLowerCase();
+        if (d === "on time") return "on-time";
+        if (d.includes("cancel")) return "cancelled";
+        if (d.includes("early")) return "early";
+        if (d.includes("late") || d.includes("delay")) return "delayed";
+        return "delayed";
+    }
+
+    function toggleCalling(id) {
+        const el = document.getElementById(id);
+        if (el) el.style.display = el.style.display === "none" ? "block" : "none";
+    }
+
+    function esc(t) { const d = document.createElement("div"); d.textContent = t; return d.innerHTML; }
+    </script>
+</body>
+</html>

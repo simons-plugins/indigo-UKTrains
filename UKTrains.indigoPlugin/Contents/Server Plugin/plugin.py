@@ -414,6 +414,45 @@ def routeUpdate(dev, apiAccess, paths, logger, plugin_prefs=None):
 
 # nationalRailLogin moved to darwin_api.py
 
+# ========== Bundled HTML status page ==========
+# The trains.html dashboard shipped in the plugin bundle, and where it gets
+# copied into Indigo's shared Web Assets folder. Mirrors the pattern used by
+# indigo-lamplighter's lamplighter.html.
+WEB_PAGE_FILENAME = "trains.html"
+WEB_PAGE_BUNDLE_DIR = "UKTrains.indigoPlugin"
+
+_TRUTHY_STRINGS = ("true", "1", "yes")
+_FALSY_STRINGS = ("false", "0", "no")
+
+
+def _truthy(value, default=True, logger=None):
+	"""Coerce a prefs checkbox value to bool.
+
+	Indigo can hand a checkbox prop back as the STRING "false" rather than
+	the bool False, and `bool("false")` is True - so a naive `.get(key,
+	True)` would silently ignore a user unticking the box. None (the pref
+	was never set, e.g. an existing install upgrading past this feature)
+	resolves to `default`.
+	"""
+	if value is None:
+		return default
+	if isinstance(value, bool):
+		return value
+	if isinstance(value, str):
+		normalized = value.strip().lower()
+		if normalized in _TRUTHY_STRINGS or normalized in _FALSY_STRINGS:
+			return normalized in _TRUTHY_STRINGS
+		if logger is not None:
+			logger.debug(f"_truthy: unrecognised value {value!r}, treating as false")
+		return False
+	if logger is not None:
+		logger.debug(
+			f"_truthy: unexpected type {type(value).__name__} for {value!r}, "
+			"coercing with bool()"
+		)
+	return bool(value)
+
+
 ################################################################################
 class Plugin(indigo.PluginBase):
 	########################################
@@ -721,6 +760,174 @@ class Plugin(indigo.PluginBase):
 			if self.config.debug:
 				self.plugin_logger.debug(f'sent "{dev.name}" status request')
 
+	########################################
+	# Bundled HTML status page (trains.html) - install/update into Indigo's
+	# shared Web Assets folder, matching indigo-lamplighter's pattern.
+	######################
+
+	@staticmethod
+	def _web_page_paths(install):
+		source = os.path.join(
+			install, "Plugins", WEB_PAGE_BUNDLE_DIR, "Contents",
+			"Resources", "pages", WEB_PAGE_FILENAME,
+		)
+		dest_dir = os.path.join(install, "Web Assets", "static", "pages")
+		return source, dest_dir, os.path.join(dest_dir, WEB_PAGE_FILENAME)
+
+	def _warn_if_managed_page_is_stale(self):
+		"""Pref is OFF, so no write happens - but a stale installed page is
+		worth one INFO. Read-only and best-effort: a filesystem problem is
+		DEBUG only, because an opted-out user must not get WARNINGs about a
+		file the plugin isn't managing. The one exception is a missing
+		bundled page, which is INFO regardless of the pref - that is a
+		damaged install, not a management choice."""
+		try:
+			install = indigo.server.getInstallFolderPath()
+			source, _dest_dir, dest = self._web_page_paths(install)
+
+			if not os.path.isfile(source):
+				self.logger.info(
+					f"Bundled UK Trains status page missing at {source}; "
+					"reinstalling the plugin restores it."
+				)
+				return
+			if not os.path.isfile(dest):
+				self.logger.debug(
+					f"No installed UK Trains status page at {dest} to check for staleness."
+				)
+				return
+
+			with open(source, "rb") as handle:
+				source_bytes = handle.read()
+			with open(dest, "rb") as handle:
+				dest_bytes = handle.read()
+
+			if source_bytes and source_bytes != dest_bytes:
+				self.logger.info(
+					f"UK Trains status page management is off, and the installed "
+					f"page ({dest}) differs from the bundled one (v{self.pluginVersion}) "
+					"- update it by hand, or re-tick 'Manage the status page' to have "
+					"the plugin do it."
+				)
+			else:
+				self.logger.debug(
+					f"UK Trains status page at {dest} matches the bundled copy, or "
+					"the bundled copy is empty -- nothing to note."
+				)
+		except OSError as exc:
+			self.logger.debug(f"Could not check the installed status page for staleness: {exc}")
+		except Exception:
+			self.logger.exception("UK Trains status page staleness check failed unexpectedly")
+
+	def _sync_web_page(self, prefs=None):
+		"""Install/update the bundled trains.html status page into Web Assets
+		on startup and on every prefs save, so the page stops needing a
+		manual copy after each change.
+
+		Must NEVER raise: a filesystem problem is a WARNING naming the
+		affected path and the way out. When the pref is off, no write
+		happens, but `_warn_if_managed_page_is_stale` still flags a stale
+		installed copy at INFO.
+		"""
+		prefs = self.pluginPrefs if prefs is None else prefs
+		if not _truthy(prefs.get("managePage"), logger=self.logger):
+			self._warn_if_managed_page_is_stale()
+			return
+
+		dest = None
+		tmp = None
+		try:
+			try:
+				install = indigo.server.getInstallFolderPath()
+			except Exception as exc:
+				self.logger.warning(
+					"Could not determine the Indigo install folder "
+					f"({exc}) - cannot install/update the UK Trains status page "
+					f"at Web Assets/static/pages/{WEB_PAGE_FILENAME} under your "
+					"Indigo installation folder. The plugin will retry at the next "
+					"config save or plugin restart."
+				)
+				return
+
+			source, dest_dir, dest = self._web_page_paths(install)
+
+			if not os.path.isfile(source):
+				self.logger.warning(
+					f"UK Trains status page not found in the plugin bundle ({source}) "
+					f"- cannot install/update it at {dest}. Reinstalling the plugin "
+					"should restore the bundled copy."
+				)
+				return
+
+			try:
+				with open(source, "rb") as handle:
+					source_bytes = handle.read()
+			except OSError as exc:
+				self.logger.warning(
+					f"The bundled UK Trains status page at {source} cannot be "
+					f"read ({exc}) - reinstalling the plugin restores it."
+				)
+				return
+
+			if not source_bytes:
+				self.logger.warning(
+					f"Bundled UK Trains status page at {source} is empty (truncated "
+					f"or corrupt) - refusing to install it over {dest}. Reinstalling "
+					"the plugin should restore the bundled copy."
+				)
+				return
+
+			dest_bytes = None
+			if os.path.isfile(dest):
+				with open(dest, "rb") as handle:
+					dest_bytes = handle.read()
+
+			if dest_bytes == source_bytes:
+				self.logger.debug(f"UK Trains status page already up to date in Web Assets ({dest})")
+				return
+
+			os.makedirs(dest_dir, exist_ok=True)
+			tmp = f"{dest}.tmp"
+			with open(tmp, "wb") as handle:
+				handle.write(source_bytes)
+			os.replace(tmp, dest)
+			tmp = None  # installed -- nothing left to clean up
+
+			self.logger.info(
+				f"Installed/updated the UK Trains status page in Web Assets "
+				f"(v{self.pluginVersion} -> managed by the plugin; untick 'Manage the "
+				"status page' to hand-edit it)"
+			)
+		except OSError as exc:
+			leftover = ""
+			if tmp is not None:
+				try:
+					os.remove(tmp)
+				except FileNotFoundError:
+					pass
+				except OSError:
+					leftover = f" A partial file was left at {tmp}; delete it by hand."
+			where = dest or f"Web Assets/static/pages/{WEB_PAGE_FILENAME}"
+			self.logger.warning(
+				f"Could not install/update the UK Trains status page at {where}: "
+				f"{exc}.{leftover} Copy the bundled copy (Contents/Resources/pages/"
+				f"{WEB_PAGE_FILENAME} inside the plugin bundle) there by hand, or "
+				"untick 'Manage the status page' to stop the plugin trying. The "
+				"plugin will retry at the next config save or plugin restart."
+			)
+		except Exception:
+			if tmp is not None:
+				try:
+					os.remove(tmp)
+				except OSError:
+					pass
+			self.logger.exception("UK Trains status page sync failed unexpectedly")
+
+	def closedPrefsConfigUi(self, valuesDict, userCancelled):
+		if userCancelled:
+			return
+		self._sync_web_page(valuesDict)
+
 	def startup(self):
 
 		self.plugin_logger.info("UK-Trains plugin startup")
@@ -755,6 +962,8 @@ class Plugin(indigo.PluginBase):
 		for dev in indigo.devices.iter("self"):
 			# Now check states
 			dev.stateListOrDisplayStateIdChanged()
+
+		self._sync_web_page()
 
 	def shutdown(self):
 		self.plugin_logger.info("UK-Trains plugin shutdown")
