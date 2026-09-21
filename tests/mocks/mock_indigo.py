@@ -66,6 +66,11 @@ class MockPluginBase:
         self.sleep = Mock()
         self.errorLog = Mock()
 
+    def closedPrefsConfigUi(self, valuesDict, userCancelled):
+        """Real indigo.PluginBase provides this as a no-op stub; plugins are
+        expected to call super().closedPrefsConfigUi(...)."""
+        pass
+
     class StopThread(Exception):
         """Exception to signal thread stop"""
         pass

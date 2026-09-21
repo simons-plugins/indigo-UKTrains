@@ -148,6 +148,24 @@ If enabled, the plugin generates PNG images showing departure boards:
 
 Display on iPads, dashboards, or control pages using Indigo's control page image feature.
 
+### HTML Status Page
+
+The plugin bundles a mobile-friendly departure board page (`trains.html`) that
+reads every `trainTimetable` device over Indigo's HTTP API and lets you switch
+between configured routes from a dropdown.
+
+On startup, and on every plugin config save, the plugin copies its bundled
+copy into Indigo's shared Web Assets folder if it is missing or out of date,
+so it stays current across upgrades without a manual copy. It's served at:
+
+```
+https://<indigo-host>:8176/static/pages/trains.html?api-key=<your-key>
+```
+
+Untick **Manage the status page** in the plugin config if you want to
+hand-edit the installed copy — the plugin then leaves it alone, and only logs
+an INFO note when the installed page drifts from the bundled one.
+
 ## Troubleshooting
 
 ### Plugin won't start
