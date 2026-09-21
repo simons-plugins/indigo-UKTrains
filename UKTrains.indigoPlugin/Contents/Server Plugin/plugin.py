@@ -72,10 +72,31 @@ except ImportError:
 
 # ========== Plugin Logger Class ==========
 
+class _EventLogForwarder(logging.Handler):
+	"""Forwards WARNING+ records from PluginLogger's file-only logger to
+	Indigo's own Event Log handler, so PluginLogger keeps propagate=False
+	(debug/info chatter stays file-only) while genuine problems still
+	surface to the user. Reuses the plugin's real indigo_log_handler
+	instance via handle() (not a second logger.log() call), so there's no
+	recursion and the Event Log line looks identical to one logged via
+	self.logger."""
+
+	def __init__(self, indigo_log_handler: logging.Handler, level=logging.WARNING):
+		super().__init__(level=level)
+		self._indigo_log_handler = indigo_log_handler
+
+	def emit(self, record: logging.LogRecord):
+		try:
+			self._indigo_log_handler.handle(record)
+		except Exception:
+			self.handleError(record)
+
+
 class PluginLogger:
 	"""Structured logger for UK-Trains plugin with rotating file handler"""
 
-	def __init__(self, plugin_id: str, log_dir: Path, debug: bool = False):
+	def __init__(self, plugin_id: str, log_dir: Path, debug: bool = False,
+				 event_log_handler: Optional[logging.Handler] = None):
 		"""
 		Initialize plugin logger.
 
@@ -83,6 +104,9 @@ class PluginLogger:
 			plugin_id: Unique plugin identifier
 			log_dir: Directory for log files
 			debug: Enable debug-level logging
+			event_log_handler: Indigo's own indigo_log_handler (self.indigo_log_handler
+				on the Plugin instance). When given, WARNING+ records also reach the
+				Indigo Event Log; DEBUG/INFO stay file-only (issue #26).
 		"""
 		self.logger = logging.getLogger(f'Plugin.{plugin_id}')
 		self.logger.setLevel(logging.DEBUG if debug else logging.INFO)
@@ -109,6 +133,15 @@ class PluginLogger:
 
 		self.logger.addHandler(file_handler)
 
+		# WARNING+ also reaches the Indigo Event Log (see _EventLogForwarder).
+		# DEBUG/INFO stay file-only, same as before.
+		self._event_log_handler = event_log_handler
+		if event_log_handler is not None:
+			self.logger.addHandler(_EventLogForwarder(event_log_handler))
+
+		# Per-key state for log_failure()/log_recovery() throttling below.
+		self._failure_state: Dict[str, str] = {}
+
 	def debug(self, msg: str, **kwargs):
 		"""Log debug message"""
 		self.logger.debug(msg, **kwargs)
@@ -133,6 +166,33 @@ class PluginLogger:
 		"""Enable/disable debug logging"""
 		level = logging.DEBUG if enabled else logging.INFO
 		self.logger.setLevel(level)
+
+	def log_failure(self, key: str, message: str):
+		"""Log a failure that may repeat every polling cycle (e.g. image
+		generation retried in routeUpdate). The file log gets every
+		occurrence; the Event Log gets it only the first time for `key`,
+		or again once `message` changes. Call log_recovery() on success so
+		a later recurrence of the same message is treated as new again.
+		"""
+		if self._failure_state.get(key) == message:
+			# Unchanged repeat: keep it in the file log only.
+			self.logger.info(message)
+		else:
+			self._failure_state[key] = message
+			self.logger.error(message)
+
+	def log_recovery(self, key: str, message: str):
+		"""Call after a successful cycle for `key`. No-op unless `key` had
+		a failure logged via log_failure(); otherwise clears that failure
+		and emits one INFO line straight to the Event Log."""
+		if self._failure_state.pop(key, None) is None:
+			return
+		self.logger.info(message)
+		if self._event_log_handler is not None:
+			record = self.logger.makeRecord(
+				self.logger.name, logging.INFO, __file__, 0, message, (), None
+			)
+			self._event_log_handler.handle(record)
 
 
 # ========== Configuration Classes (extracted to config.py) ==========
@@ -405,8 +465,20 @@ def routeUpdate(dev, apiAccess, paths, logger, plugin_prefs=None):
 			# Update hash only after successful generation
 			dev.updateStateOnServer('image_content_hash', current_hash)
 			logger.debug(f"Updated content hash for '{dev.name}'")
+			# Clears any outstanding failure for this device and, if one was
+			# outstanding, announces the recovery once (#26).
+			logger.log_recovery(
+				f"image_gen:{dev.id}",
+				f"Image generation working again for '{dev.name}'"
+			)
 		else:
-			logger.error(f"Image generation failed for '{dev.name}', will retry next cycle")
+			# Retried every cycle on a persistent failure - throttled so the
+			# Event Log gets it once (then again only on change/recovery),
+			# while the file log still gets every occurrence (#26).
+			logger.log_failure(
+				f"image_gen:{dev.id}",
+				f"Image generation failed for '{dev.name}', will retry next cycle"
+			)
 	else:
 		# Content unchanged - skip generation
 		logger.debug(f"Board content unchanged for '{dev.name}', skipping image generation")
@@ -469,7 +541,13 @@ class Plugin(indigo.PluginBase):
 
 		# Create structured logger using paths object
 		debug_enabled = pluginPrefs.get('checkboxDebug1', False)
-		self.plugin_logger = PluginLogger(pluginId, self.paths.log_dir, debug_enabled)
+		# indigo.PluginBase.__init__ above sets up self.indigo_log_handler; pass it
+		# through so WARNING+ from plugin_logger also reaches the Event Log (#26).
+		# getattr guards test doubles that don't set the attribute.
+		self.plugin_logger = PluginLogger(
+			pluginId, self.paths.log_dir, debug_enabled,
+			event_log_handler=getattr(self, 'indigo_log_handler', None)
+		)
 		self.plugin_logger.info(f"{pluginDisplayName} v{pluginVersion} initializing")
 
 		# Validate configuration using Pydantic
