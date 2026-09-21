@@ -29,6 +29,7 @@
 
 # Get system modules
 import os, sys, time, datetime, traceback, re
+import tempfile
 import subprocess
 from subprocess import call
 from dataclasses import dataclass
@@ -776,9 +777,11 @@ class Plugin(indigo.PluginBase):
 
 	def _warn_if_managed_page_is_stale(self):
 		"""Pref is OFF, so no write happens - but a stale installed page is
-		worth one INFO. Read-only and best-effort: a filesystem problem is
-		DEBUG only, because an opted-out user must not get WARNINGs about a
-		file the plugin isn't managing. The one exception is a missing
+		worth one INFO. Read-only and best-effort: ANY failure here (including
+		one that has nothing to do with the filesystem, e.g.
+		getInstallFolderPath() itself raising) is DEBUG only, with exc_info,
+		because an opted-out user must not get WARNINGs/ERRORs about a file
+		the plugin isn't managing. The one exception is a missing or empty
 		bundled page, which is INFO regardless of the pref - that is a
 		damaged install, not a management choice."""
 		try:
@@ -791,18 +794,27 @@ class Plugin(indigo.PluginBase):
 					"reinstalling the plugin restores it."
 				)
 				return
+
+			with open(source, "rb") as handle:
+				source_bytes = handle.read()
+
+			if not source_bytes:
+				self.logger.info(
+					f"Bundled UK Trains status page at {source} is empty "
+					"(damaged install); reinstalling the plugin restores it."
+				)
+				return
+
 			if not os.path.isfile(dest):
 				self.logger.debug(
 					f"No installed UK Trains status page at {dest} to check for staleness."
 				)
 				return
 
-			with open(source, "rb") as handle:
-				source_bytes = handle.read()
 			with open(dest, "rb") as handle:
 				dest_bytes = handle.read()
 
-			if source_bytes and source_bytes != dest_bytes:
+			if source_bytes != dest_bytes:
 				self.logger.info(
 					f"UK Trains status page management is off, and the installed "
 					f"page ({dest}) differs from the bundled one (v{self.pluginVersion}) "
@@ -810,14 +822,12 @@ class Plugin(indigo.PluginBase):
 					"the plugin do it."
 				)
 			else:
-				self.logger.debug(
-					f"UK Trains status page at {dest} matches the bundled copy, or "
-					"the bundled copy is empty -- nothing to note."
-				)
-		except OSError as exc:
-			self.logger.debug(f"Could not check the installed status page for staleness: {exc}")
-		except Exception:
-			self.logger.exception("UK Trains status page staleness check failed unexpectedly")
+				self.logger.debug(f"UK Trains status page at {dest} matches the bundled copy.")
+		except Exception as exc:
+			self.logger.debug(
+				f"Could not check the installed status page for staleness: {exc}",
+				exc_info=True,
+			)
 
 	def _sync_web_page(self, prefs=None):
 		"""Install/update the bundled trains.html status page into Web Assets
@@ -879,22 +889,33 @@ class Plugin(indigo.PluginBase):
 
 			dest_bytes = None
 			if os.path.isfile(dest):
-				with open(dest, "rb") as handle:
-					dest_bytes = handle.read()
+				try:
+					with open(dest, "rb") as handle:
+						dest_bytes = handle.read()
+				except OSError as exc:
+					self.logger.warning(
+						f"The installed UK Trains status page at {dest} could not "
+						f"be read to check whether it needs updating ({exc}) - "
+						"likely a permissions problem. The plugin will retry at "
+						"the next config save or plugin restart."
+					)
+					return
 
 			if dest_bytes == source_bytes:
 				self.logger.debug(f"UK Trains status page already up to date in Web Assets ({dest})")
 				return
 
 			os.makedirs(dest_dir, exist_ok=True)
-			tmp = f"{dest}.tmp"
-			with open(tmp, "wb") as handle:
+			fd, tmp = tempfile.mkstemp(dir=dest_dir, prefix=".trains.", suffix=".tmp")
+			with os.fdopen(fd, "wb") as handle:
 				handle.write(source_bytes)
+				handle.flush()
+				os.fsync(handle.fileno())
 			os.replace(tmp, dest)
 			tmp = None  # installed -- nothing left to clean up
 
 			self.logger.info(
-				f"Installed/updated the UK Trains status page in Web Assets "
+				f"Installed/updated the UK Trains status page at {dest} "
 				f"(v{self.pluginVersion} -> managed by the plugin; untick 'Manage the "
 				"status page' to hand-edit it)"
 			)
@@ -924,8 +945,12 @@ class Plugin(indigo.PluginBase):
 			self.logger.exception("UK Trains status page sync failed unexpectedly")
 
 	def closedPrefsConfigUi(self, valuesDict, userCancelled):
+		super().closedPrefsConfigUi(valuesDict, userCancelled)
 		if userCancelled:
 			return
+		# Sync from the just-saved valuesDict, not self.pluginPrefs -- Indigo
+		# updates self.pluginPrefs from this same valuesDict, but doing it
+		# ourselves means we don't depend on that having happened yet.
 		self._sync_web_page(valuesDict)
 
 	def startup(self):
