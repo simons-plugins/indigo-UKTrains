@@ -80,6 +80,13 @@ class PluginPaths:
 	station_codes_file: Path
 	image_output_dir: Path
 	log_dir: Path
+	# Set when initialize() had to fall back to the default image_output_dir
+	# for a *misconfigured* user_image_path - i.e. not empty/whitespace and
+	# not the "No images being saved" placeholder validatePrefsConfigUi
+	# writes when createMaps is unticked. Holds the raw rejected value so the
+	# caller can warn the user; None means no fallback happened, or it
+	# happened for an expected reason that doesn't warrant a warning.
+	image_output_fallback_from: Optional[str] = None
 
 	@classmethod
 	def initialize(cls, plugin_path: str, user_image_path: Optional[str] = None) -> 'PluginPaths':
@@ -104,13 +111,26 @@ class PluginPaths:
 		# whitespace-only, or the "No images being saved" placeholder
 		# validatePrefsConfigUi writes when createMaps is unticked (see #21) -
 		# falls back to the default instead of being mkdir'd as a relative
-		# path under the process's cwd.
+		# path under the process's cwd. A '~name' path for an unknown user
+		# makes expanduser() raise RuntimeError rather than return a relative
+		# path, so that's caught and treated the same as any other
+		# non-absolute value.
 		default_image_output = Path.home() / 'Documents' / 'IndigoImages'
 		image_output = default_image_output
+		fallback_from: Optional[str] = None
 		if user_image_path:
-			candidate = Path(user_image_path.strip()).expanduser()
-			if candidate.is_absolute():
+			stripped = user_image_path.strip()
+			candidate = None
+			if stripped:
+				try:
+					candidate = Path(stripped).expanduser()
+				except RuntimeError:
+					candidate = None
+
+			if candidate is not None and candidate.is_absolute():
 				image_output = candidate
+			elif stripped and stripped != 'No images being saved':
+				fallback_from = user_image_path
 
 		# Ensure image output directory exists
 		image_output.mkdir(parents=True, exist_ok=True)
@@ -127,7 +147,8 @@ class PluginPaths:
 			fonts_dir=fonts,
 			station_codes_file=station_codes,
 			image_output_dir=image_output,
-			log_dir=log_dir
+			log_dir=log_dir,
+			image_output_fallback_from=fallback_from
 		)
 
 	def get_image_path(self, start_crs: str, end_crs: str) -> Path:
