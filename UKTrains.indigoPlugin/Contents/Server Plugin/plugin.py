@@ -514,7 +514,7 @@ class Plugin(indigo.PluginBase):
 		the log for a pref that hasn't changed."""
 		fallback_from = self.paths.image_output_fallback_from
 		if fallback_from:
-			self.plugin_logger.warning(
+			self.logger.warning(
 				f"Image path '{fallback_from}' is not a full path; writing "
 				f"departure boards to {self.paths.image_output_dir} instead "
 				f"- fix it in Plugin Config"

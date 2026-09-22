@@ -327,6 +327,8 @@ def FakeSelfWithPaths(paths, plugin_id="test.uktrains.fallback"):
     instance = plugin.Plugin.__new__(plugin.Plugin)
     instance.paths = paths
     instance.plugin_logger = plugin.PluginLogger(plugin_id, paths.log_dir)
+    # Stand-in for indigo.PluginBase's self.logger (the Event Log logger)
+    instance.logger = logging.getLogger(f"Plugin.eventlog.{plugin_id}")
     return instance
 
 
@@ -342,7 +344,6 @@ class TestWarnIfImagePathFallback:
         fake = FakeSelfWithPaths(paths)
 
         with caplog.at_level(logging.WARNING):
-            fake.plugin_logger.logger.addHandler(caplog.handler)
             fake._warn_if_image_path_fallback()
 
         warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
@@ -361,7 +362,6 @@ class TestWarnIfImagePathFallback:
         fake = FakeSelfWithPaths(paths)
 
         with caplog.at_level(logging.WARNING):
-            fake.plugin_logger.logger.addHandler(caplog.handler)
             fake._warn_if_image_path_fallback()
 
         assert not any(r.levelno == logging.WARNING for r in caplog.records)
