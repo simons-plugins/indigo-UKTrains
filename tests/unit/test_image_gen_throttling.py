@@ -61,6 +61,21 @@ def file_log(plugin_logger):
 
 
 @pytest.fixture
+def plugin_logger_debug(tmp_path, event_log):
+    # debug=True this time -- needed to observe the DEBUG-level "non-fatal
+    # stderr on success" record in file_log_debug below.
+    plugin_id = f"test-imagegen-debug-{uuid.uuid4().hex}"
+    return plugin.PluginLogger(plugin_id, tmp_path, debug=True, event_log_handler=event_log)
+
+
+@pytest.fixture
+def file_log_debug(plugin_logger_debug):
+    handler = RecordingHandler()
+    plugin_logger_debug.logger.addHandler(handler)
+    return handler
+
+
+@pytest.fixture
 def paths(tmp_path):
     """Just needs to exist -- subprocess.run is mocked, so text2png.py is
     never actually invoked."""
@@ -227,3 +242,55 @@ class TestPersistentFailureThrottling:
 
         assert result is False
         assert bare_logger.error.call_count == 1
+
+
+@pytest.mark.unit
+class TestSuccessWithNonFatalStderr:
+    """text2png.py can exit 0 (image drawn fine) while still printing a
+    non-fatal warning to stderr -- e.g. 'No services parsed' overnight when
+    there are no trains. That must never reach the Event Log and must not
+    be treated as a failure (issue: PR #28 would otherwise forward it as
+    ERROR via the WARNING+ Event Log bridge)."""
+
+    def test_success_with_stderr_is_debug_only_not_event_log(
+        self, plugin_logger_debug, event_log, file_log_debug, paths
+    ):
+        device = make_device()
+
+        with patch("image_generator.subprocess.run") as run_mock:
+            run_mock.return_value = _run_result(
+                0,
+                stderr="Warning: No services parsed from .../BFRKTNdepartureBoard.txt\nFile had 8 lines",
+            )
+            result = _generate_single_image(
+                paths.plugin_root, paths.image_filename, paths.text_filename,
+                paths.parameters_filename, True, "modern", device, plugin_logger_debug,
+            )
+
+        assert result is True
+        # Nothing at WARNING or above reached the Event Log handler.
+        assert all(r.levelno < logging.WARNING for r in event_log.records)
+        assert len(event_log.records) == 0
+        # The stderr detail still lands in the file log, at DEBUG.
+        stderr_records = [r for r in file_log_debug.records if "No services parsed" in r.getMessage()]
+        assert len(stderr_records) == 1
+        assert stderr_records[0].levelno == logging.DEBUG
+
+    def test_failed_generation_with_stderr_still_one_throttled_error(
+        self, plugin_logger, event_log, paths
+    ):
+        """Non-zero return code keeps the existing throttled ERROR path
+        untouched -- it already folds stderr into its single message."""
+        device = make_device()
+
+        with patch("image_generator.subprocess.run") as run_mock:
+            run_mock.return_value = _run_result(2, stderr="Traceback: font missing")
+            result = _generate_single_image(
+                paths.plugin_root, paths.image_filename, paths.text_filename,
+                paths.parameters_filename, True, "modern", device, plugin_logger,
+            )
+
+        assert result is False
+        assert len(event_log.records) == 1
+        assert event_log.records[0].levelno == logging.ERROR
+        assert "font missing" in event_log.records[0].getMessage()

@@ -159,6 +159,12 @@ def _generate_single_image(
 
 		if result.returncode == 0:
 			logger.debug(f"{board_style.capitalize()} image generated successfully for '{device.name}'")
+			if result.stderr:
+				# text2png.py can print non-fatal warnings (e.g. "No services
+				# parsed") on an otherwise successful run (returncode 0) --
+				# file-log detail only, never the Event Log and never a
+				# throttled failure.
+				logger.debug(f"{board_style.capitalize()} image generation stderr (non-fatal): {result.stderr.strip()}")
 			if use_throttle and hasattr(logger, 'clear_failure'):
 				logger.clear_failure(key)
 			return True
