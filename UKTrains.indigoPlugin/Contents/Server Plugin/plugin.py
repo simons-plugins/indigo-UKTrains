@@ -471,6 +471,7 @@ class Plugin(indigo.PluginBase):
 		debug_enabled = pluginPrefs.get('checkboxDebug1', False)
 		self.plugin_logger = PluginLogger(pluginId, self.paths.log_dir, debug_enabled)
 		self.plugin_logger.info(f"{pluginDisplayName} v{pluginVersion} initializing")
+		self._warn_if_image_path_fallback()
 
 		# Validate configuration using Pydantic
 		if PluginConfiguration is not None:
@@ -503,6 +504,21 @@ class Plugin(indigo.PluginBase):
 
 	def __del__(self):
 		indigo.PluginBase.__del__(self)
+
+	def _warn_if_image_path_fallback(self):
+		"""Surface a silent redirect: PluginPaths.initialize() falls back to
+		the default image_output_dir for a misconfigured imageFilename pref
+		with no log of its own (there's no logger yet at that point). Call
+		this only from __init__ - runConcurrentThread re-initializes
+		self.paths every loop, and repeating the warning there would spam
+		the log for a pref that hasn't changed."""
+		fallback_from = self.paths.image_output_fallback_from
+		if fallback_from:
+			self.logger.warning(
+				f"Image path '{fallback_from}' is not a full path; writing "
+				f"departure boards to {self.paths.image_output_dir} instead "
+				f"- fix it in Plugin Config"
+			)
 
 	def validateDeviceConfigUi(self, devProps, typeId, devId):
 
@@ -590,18 +606,58 @@ class Plugin(indigo.PluginBase):
 			errorDict["showAlertText"] ='You must enter a valid API key - see forum for details on obtaining a free key'
 			return (False, devProps, errorDict)
 
+		if 'updateFreq' in devProps:
+			try:
+				updateFreq = int(devProps['updateFreq'])
+			except (TypeError, ValueError):
+				errorDict = indigo.Dict()
+				errorDict["updateFreq"] = "Enter a whole number of seconds"
+				errorDict["showAlertText"] = "Update frequency must be a whole number of seconds (minimum 30)"
+				return (False, devProps, errorDict)
+
+			if updateFreq < 30:
+				errorDict = indigo.Dict()
+				errorDict["updateFreq"] = "Update frequency must be at least 30 seconds"
+				errorDict["showAlertText"] = "Update frequency must be at least 30 seconds"
+				return (False, devProps, errorDict)
+
 		if 'createMaps' in devProps:
 			if devProps['createMaps']:
 				# Check image file name
-				if len(devProps['imageFilename']) == 0:
+				if len(devProps.get('imageFilename', '')) == 0:
 					errorDict = indigo.Dict()
-					errorDict["stationCode"] = "No file path found for images"
+					errorDict["imageFilename"] = "No file path found for images"
 					errorDict["showAlertText"] = "You must enter a path for your image (e.g. /Users/myIndigo) - no trailing '/'"
 					return (False, devProps, errorDict)
 
-				# Validate path using pathlib
+				# Validate path using pathlib, expanding '~' so the pref is
+				# always stored as an absolute path (see #26 - an unexpanded
+				# '~' silently created a literal '~' folder under the cwd).
 				try:
-					image_path = Path(devProps['imageFilename'])
+					image_path = Path(devProps['imageFilename'].strip()).expanduser()
+				except RuntimeError:
+					# e.g. '~nosuchuser/x' - expanduser() raises RuntimeError
+					# (not OSError) for an unknown user in a '~name' path.
+					errorDict = indigo.Dict()
+					errorDict["imageFilename"] = (
+						"Unknown user in '~name' path — enter a full path like "
+						"/Users/<name>/Documents/IndigoImages"
+					)
+					errorDict["showAlertText"] = errorDict["imageFilename"]
+					return (False, devProps, errorDict)
+
+				try:
+					if not image_path.is_absolute():
+						errorDict = indigo.Dict()
+						errorDict["imageFilename"] = "Enter a full path for image files"
+						errorDict["showAlertText"] = (
+							"You must enter a full path for your image, e.g. "
+							"/Users/<name>/Documents/IndigoImages - no trailing '/'"
+						)
+						return (False, devProps, errorDict)
+
+					devProps['imageFilename'] = str(image_path)
+
 					if hasattr(self, 'config') and self.config.debug:
 						self.plugin_logger.debug(f'Validating image path: {image_path}')
 
@@ -968,7 +1024,6 @@ class Plugin(indigo.PluginBase):
 		# Get configuration
 		apiKey = self.pluginPrefs.get('darwinAPI', 'NO KEY')
 		stationImage = self.pluginPrefs.get('createMaps', "true")
-		refreshFreq = int(self.pluginPrefs.get('updateFreq','60'))
 
 		if stationImage:
 			imagePath= self.pluginPrefs.get('imageFilename', '/Users')

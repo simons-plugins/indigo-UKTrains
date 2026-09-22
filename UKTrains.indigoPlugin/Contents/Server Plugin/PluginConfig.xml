@@ -23,8 +23,8 @@
         <Description>The Rail Data Marketplace REST base URL. Only change if you've subscribed to a different LDBWS product version.</Description>
     </Field>
     <Field id="updateFreq" type="textfield" defaultValue="60">
-        <Label>Time between updates (secs):</Label>
-        <Description>How long between updates?</Description>
+        <Label>Time between updates (secs, minimum 30):</Label>
+        <Description>How long between updates? Minimum 30 seconds.</Description>
     </Field>
     <Field id="simpleSeparator41" type="separator"/>
     <Field id="autoLabel02"
