@@ -96,7 +96,7 @@ class PluginPaths:
 
 		# User-configurable image output
 		if user_image_path:
-			image_output = Path(user_image_path)
+			image_output = Path(user_image_path.strip()).expanduser()
 		else:
 			image_output = Path.home() / 'Documents' / 'IndigoImages'
 

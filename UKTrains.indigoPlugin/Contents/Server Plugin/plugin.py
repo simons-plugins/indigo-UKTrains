@@ -590,6 +590,21 @@ class Plugin(indigo.PluginBase):
 			errorDict["showAlertText"] ='You must enter a valid API key - see forum for details on obtaining a free key'
 			return (False, devProps, errorDict)
 
+		if 'updateFreq' in devProps:
+			try:
+				updateFreq = int(devProps['updateFreq'])
+			except (TypeError, ValueError):
+				errorDict = indigo.Dict()
+				errorDict["updateFreq"] = "Enter a whole number of seconds"
+				errorDict["showAlertText"] = "Update frequency must be a whole number of seconds (minimum 30)"
+				return (False, devProps, errorDict)
+
+			if updateFreq < 30:
+				errorDict = indigo.Dict()
+				errorDict["updateFreq"] = "Update frequency must be at least 30 seconds"
+				errorDict["showAlertText"] = "Update frequency must be at least 30 seconds"
+				return (False, devProps, errorDict)
+
 		if 'createMaps' in devProps:
 			if devProps['createMaps']:
 				# Check image file name
@@ -599,9 +614,23 @@ class Plugin(indigo.PluginBase):
 					errorDict["showAlertText"] = "You must enter a path for your image (e.g. /Users/myIndigo) - no trailing '/'"
 					return (False, devProps, errorDict)
 
-				# Validate path using pathlib
+				# Validate path using pathlib, expanding '~' so the pref is
+				# always stored as an absolute path (see #26 - an unexpanded
+				# '~' silently created a literal '~' folder under the cwd).
 				try:
-					image_path = Path(devProps['imageFilename'])
+					image_path = Path(devProps['imageFilename'].strip()).expanduser()
+
+					if not image_path.is_absolute():
+						errorDict = indigo.Dict()
+						errorDict["imageFilename"] = "Enter a full path for image files"
+						errorDict["showAlertText"] = (
+							"You must enter a full path for your image, e.g. "
+							"/Users/<name>/Documents/IndigoImages - no trailing '/'"
+						)
+						return (False, devProps, errorDict)
+
+					devProps['imageFilename'] = str(image_path)
+
 					if hasattr(self, 'config') and self.config.debug:
 						self.plugin_logger.debug(f'Validating image path: {image_path}')
 
