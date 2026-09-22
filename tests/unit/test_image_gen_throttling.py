@@ -25,23 +25,8 @@ from unittest.mock import Mock, patch
 import pytest
 
 import plugin
-from image_generator import _generate_single_image
-
-
-class RecordingHandler(logging.Handler):
-    """Stands in for Indigo's self.indigo_log_handler."""
-
-    def __init__(self):
-        super().__init__(level=logging.NOTSET)
-        self.records = []
-
-    def emit(self, record):
-        self.records.append(record)
-
-
-@pytest.fixture
-def event_log():
-    return RecordingHandler()
+from image_generator import _generate_single_image, _generate_departure_image
+from mocks.mock_indigo import RecordingHandler
 
 
 @pytest.fixture
@@ -142,6 +127,15 @@ class TestPersistentFailureThrottling:
                 paths.plugin_root, paths.image_filename, paths.text_filename,
                 paths.parameters_filename, True, "classic", device, plugin_logger,
             )
+            # Repeat the SAME category first -- proves suppression is
+            # actually active, so the different-category assertion below
+            # can't pass just because throttling is broken entirely (#28
+            # review: degradation-path coverage).
+            _generate_single_image(
+                paths.plugin_root, paths.image_filename, paths.text_filename,
+                paths.parameters_filename, True, "classic", device, plugin_logger,
+            )
+            assert len(event_log.records) == 1
 
             run_mock.return_value = _run_result(1, stderr="disk full")
             _generate_single_image(
@@ -285,24 +279,6 @@ class TestPersistentFailureThrottling:
         assert len(event_log.records) == 1
         assert "timed out" in event_log.records[0].getMessage()
 
-    def test_unthrottled_logger_falls_back_to_plain_error(self, paths):
-        """A plain logging.Logger (no log_failure/clear_failure) must fall
-        back to the old unthrottled behaviour rather than raising."""
-        device = make_device()
-        # spec deliberately omits log_failure/clear_failure so hasattr()
-        # guards in _generate_single_image fall back to plain .error().
-        bare_logger = Mock(spec=["debug", "error"])
-
-        with patch("image_generator.subprocess.run") as run_mock:
-            run_mock.return_value = _run_result(2, stderr="font missing")
-            result = _generate_single_image(
-                paths.plugin_root, paths.image_filename, paths.text_filename,
-                paths.parameters_filename, True, "classic", device, bare_logger,
-            )
-
-        assert result is False
-        assert bare_logger.error.call_count == 1
-
 
 @pytest.mark.unit
 class TestGenericExceptionClassification:
@@ -323,6 +299,16 @@ class TestGenericExceptionClassification:
                 paths.plugin_root, paths.image_filename, paths.text_filename,
                 paths.parameters_filename, True, "classic", device, plugin_logger,
             )
+            # Repeat the SAME message first -- proves suppression is
+            # actually active, so the different-message assertion below
+            # can't pass just because throttling is broken entirely (#28
+            # review: degradation-path coverage).
+            _generate_single_image(
+                paths.plugin_root, paths.image_filename, paths.text_filename,
+                paths.parameters_filename, True, "classic", device, plugin_logger,
+            )
+            assert len(event_log.records) == 1
+
             run_mock.side_effect = OSError("permission denied")
             _generate_single_image(
                 paths.plugin_root, paths.image_filename, paths.text_filename,
@@ -399,3 +385,146 @@ class TestSuccessWithNonFatalStderr:
         assert len(event_log.records) == 1
         assert event_log.records[0].levelno == logging.ERROR
         assert "font missing" in event_log.records[0].getMessage()
+
+
+@pytest.mark.unit
+class TestUnexpectedExceptionKeepsTraceback:
+    """The `except Exception` branch (subprocess.run itself raising) must
+    keep the traceback in the file log via exc_info=True -- the Event Log
+    line stays the one-liner message (#28 review)."""
+
+    def test_exc_info_present_on_file_record(self, plugin_logger, event_log, file_log, paths):
+        device = make_device()
+
+        with patch("image_generator.subprocess.run") as run_mock:
+            run_mock.side_effect = OSError("disk full")
+            result = _generate_single_image(
+                paths.plugin_root, paths.image_filename, paths.text_filename,
+                paths.parameters_filename, True, "classic", device, plugin_logger,
+            )
+
+        assert result is False
+        assert len(file_log.records) == 1
+        assert file_log.records[0].exc_info is not None
+        assert len(event_log.records) == 1
+        # The Event Log line is still the one-liner -- no traceback text in
+        # the message itself.
+        assert "Traceback" not in event_log.records[0].getMessage()
+
+
+@pytest.mark.unit
+class TestTimeoutStderrDecoding:
+    """subprocess.TimeoutExpired hands back bytes for .stderr even though
+    `text=True` only governs a *completed* run's stdout/stderr -- decode
+    before folding into the message, or a "b'...'" repr leaks into the
+    Event Log (#28 review)."""
+
+    def test_bytes_stderr_is_decoded_not_repr_leaked(self, plugin_logger, event_log, paths):
+        import subprocess as subprocess_module
+
+        device = make_device()
+
+        with patch("image_generator.subprocess.run") as run_mock:
+            run_mock.side_effect = subprocess_module.TimeoutExpired(
+                cmd="text2png.py", timeout=10, output=None, stderr=b"font cache building\n",
+            )
+            result = _generate_single_image(
+                paths.plugin_root, paths.image_filename, paths.text_filename,
+                paths.parameters_filename, True, "classic", device, plugin_logger,
+            )
+
+        assert result is False
+        assert len(event_log.records) == 1
+        message = event_log.records[0].getMessage()
+        assert "b'" not in message
+        assert "font cache building" in message
+
+
+@pytest.mark.unit
+class TestDisabledStyleClearsThrottleState:
+    """A style that gets disabled must drop its throttle state -- so
+    re-enabling it and hitting the same failure again reaches the Event
+    Log as new, not suppressed as 'unchanged' (#28 review)."""
+
+    def test_classic_fails_disabled_reenabled_same_failure_is_error_again(
+        self, plugin_logger, event_log, paths
+    ):
+        device = make_device()
+        device.updateStateOnServer = Mock()
+
+        with patch("image_generator.subprocess.run") as run_mock:
+            run_mock.return_value = _run_result(2, stderr="font missing")
+            result = _generate_departure_image(
+                paths.plugin_root, paths.image_filename, paths.text_filename,
+                paths.parameters_filename, True, device, plugin_logger,
+                plugin_prefs={'generateClassicBoard': True, 'generateModernBoard': False},
+            )
+            assert result is False
+            assert len(event_log.records) == 1
+
+            # Disable classic -- image_gen:<id>:classic's throttle state
+            # must be dropped, not just skipped over.
+            result = _generate_departure_image(
+                paths.plugin_root, paths.image_filename, paths.text_filename,
+                paths.parameters_filename, True, device, plugin_logger,
+                plugin_prefs={'generateClassicBoard': False, 'generateModernBoard': False},
+            )
+            # Both styles disabled -- a *different* config-key failure, not
+            # a repeat of the classic PIL error.
+            assert len(event_log.records) == 2
+
+            # Re-enable classic and hit the exact same failure again.
+            result = _generate_departure_image(
+                paths.plugin_root, paths.image_filename, paths.text_filename,
+                paths.parameters_filename, True, device, plugin_logger,
+                plugin_prefs={'generateClassicBoard': True, 'generateModernBoard': False},
+            )
+
+        assert result is False
+        assert len(event_log.records) == 3
+        assert event_log.records[2].levelno == logging.ERROR
+        assert "PIL error" in event_log.records[2].getMessage()
+
+
+@pytest.mark.unit
+class TestNoStylesConfigThrottling:
+    """The 'no board styles enabled' config-key failure must clear when
+    fixed, so breaking the config again the same way reaches the Event Log
+    as a new ERROR, not suppressed as 'unchanged' (#28 review)."""
+
+    def test_config_error_fixed_then_broken_again_is_two_errors(
+        self, plugin_logger, event_log, paths
+    ):
+        device = make_device()
+        device.updateStateOnServer = Mock()
+
+        result = _generate_departure_image(
+            paths.plugin_root, paths.image_filename, paths.text_filename,
+            paths.parameters_filename, True, device, plugin_logger,
+            plugin_prefs={'generateClassicBoard': False, 'generateModernBoard': False},
+        )
+        assert result is False
+        assert len(event_log.records) == 1
+        assert event_log.records[0].levelno == logging.ERROR
+        assert "No board styles enabled" in event_log.records[0].getMessage()
+
+        with patch("image_generator.subprocess.run", return_value=_run_result(0)):
+            result = _generate_departure_image(
+                paths.plugin_root, paths.image_filename, paths.text_filename,
+                paths.parameters_filename, True, device, plugin_logger,
+                plugin_prefs={'generateClassicBoard': True, 'generateModernBoard': False},
+            )
+        assert result is True
+        # Fixing it doesn't itself announce a recovery line -- clear_failure(),
+        # not log_recovery(), for the config key.
+        assert len(event_log.records) == 1
+
+        result = _generate_departure_image(
+            paths.plugin_root, paths.image_filename, paths.text_filename,
+            paths.parameters_filename, True, device, plugin_logger,
+            plugin_prefs={'generateClassicBoard': False, 'generateModernBoard': False},
+        )
+
+        assert result is False
+        assert len(event_log.records) == 2
+        assert event_log.records[1].levelno == logging.ERROR

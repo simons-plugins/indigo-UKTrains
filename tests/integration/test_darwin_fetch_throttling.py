@@ -23,20 +23,6 @@ from unittest.mock import Mock, patch
 import plugin
 
 
-class RecordingHandler(logging.Handler):
-    def __init__(self):
-        super().__init__(level=logging.NOTSET)
-        self.records = []
-
-    def emit(self, record):
-        self.records.append(record)
-
-
-@pytest.fixture
-def event_log():
-    return RecordingHandler()
-
-
 @pytest.fixture
 def plugin_logger(tmp_path, event_log):
     plugin_id = f"test-darwinfetch-{uuid.uuid4().hex}"
@@ -105,6 +91,80 @@ class TestDarwinFetchFailureThrottling:
 
         with patch("plugin.nationalRailLogin", return_value=(True, mock_session)):
             plugin.routeUpdate(device_a, "test_api_key", mock_plugin_paths, plugin_logger)
+            # Repeat for device_a first -- proves per-device suppression is
+            # actually active, so the assertion below (device_b also
+            # reaching the Event Log) can't pass just because throttling is
+            # broken entirely (#28 review: degradation-path coverage).
+            plugin.routeUpdate(device_a, "test_api_key", mock_plugin_paths, plugin_logger)
+            assert len(event_log.records) == 1
+
             plugin.routeUpdate(device_b, "test_api_key", mock_plugin_paths, plugin_logger)
 
         assert len(event_log.records) == 2
+
+    def test_outage_then_401_is_two_errors_second_names_401(
+        self, mock_device, mock_plugin_paths, plugin_logger, event_log
+    ):
+        """The exact reproduction from the review: a network outage
+        transitioning into a 401 both raise WebServiceError (nredarwin uses
+        that type for nearly everything), so they must not throttle each
+        other -- classify_exception() keys on the embedded HTTP status, not
+        the bare exception type.
+
+        Patches plugin._fetch_station_board directly (rather than
+        mock_session.get_station_board) -- WebServiceError is one of the
+        types darwin_api_retry actually retries, and letting that run for
+        real here would mean real tenacity sleep delays for no test value;
+        routeUpdate's own handling of the raised exception is what's under
+        test, not the retry mechanism."""
+        from nredarwin.webservice import WebServiceError
+
+        with patch("plugin.nationalRailLogin", return_value=(True, Mock())):
+            with patch("plugin._fetch_station_board", side_effect=WebServiceError(
+                "Darwin REST network error: [Errno 8] nodename nor servname "
+                "provided, or not known"
+            )):
+                result = plugin.routeUpdate(mock_device, "test_api_key", mock_plugin_paths, plugin_logger)
+                assert result is False
+
+            with patch("plugin._fetch_station_board", side_effect=WebServiceError(
+                "Darwin REST 401 Unauthorized: invalid key"
+            )):
+                result = plugin.routeUpdate(mock_device, "test_api_key", mock_plugin_paths, plugin_logger)
+                assert result is False
+
+        assert len(event_log.records) == 2
+        assert [r.levelno for r in event_log.records] == [logging.ERROR, logging.ERROR]
+        assert "401" in event_log.records[1].getMessage()
+
+    def test_broken_event_log_handler_does_not_break_route_update(
+        self, mock_device, mock_plugin_paths, tmp_path
+    ):
+        """A broken indigo_log_handler (its handle() raising) must not stop
+        routeUpdate from completing or from writing to the file log --
+        _EventLogForwarder.emit() catches the exception and reports it via
+        Handler.handleError() rather than letting it propagate up through
+        PluginLogger.log_failure() (#28 review)."""
+        from mocks.mock_indigo import RecordingHandler
+
+        class RaisingHandler(logging.Handler):
+            def handle(self, record):
+                raise RuntimeError("Event Log is down")
+
+        plugin_id = f"test-brokeneventlog-{uuid.uuid4().hex}"
+        broken_plugin_logger = plugin.PluginLogger(
+            plugin_id, tmp_path, debug=True, event_log_handler=RaisingHandler()
+        )
+        file_log = RecordingHandler()
+        broken_plugin_logger.logger.addHandler(file_log)
+
+        mock_session = Mock()
+        mock_session.get_station_board.side_effect = Exception("REST request failed")
+
+        with patch("plugin.nationalRailLogin", return_value=(True, mock_session)):
+            result = plugin.routeUpdate(
+                mock_device, "test_api_key", mock_plugin_paths, broken_plugin_logger,
+            )
+
+        assert result is False
+        assert any("REST request failed" in r.getMessage() for r in file_log.records)

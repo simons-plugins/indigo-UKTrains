@@ -27,20 +27,6 @@ from unittest.mock import Mock, patch
 import plugin
 
 
-class RecordingHandler(logging.Handler):
-    def __init__(self):
-        super().__init__(level=logging.NOTSET)
-        self.records = []
-
-    def emit(self, record):
-        self.records.append(record)
-
-
-@pytest.fixture
-def event_log():
-    return RecordingHandler()
-
-
 @pytest.fixture
 def plugin_logger(tmp_path, event_log):
     plugin_id = f"test-devicelifecycle-{uuid.uuid4().hex}"

@@ -137,16 +137,12 @@ def _generate_single_image(
 	# changes or recovers. `category` (not the raw message, which includes
 	# stderr and can vary cycle to cycle) is what decides "changed?".
 	key = f"image_gen:{device.id}:{board_style}"
-	use_throttle = hasattr(logger, 'log_failure')
 
 	def _report_failure(category: str, headline: str, stderr: str = "") -> bool:
 		message = f"{headline} for device '{device.name}'"
 		if stderr:
 			message += f" -- {stderr.strip()}"
-		if use_throttle:
-			logger.log_failure(key, message, category=category)
-		else:
-			logger.error(message)
+		logger.log_failure(key, message, category=category)
 		return False
 
 	try:
@@ -166,19 +162,15 @@ def _generate_single_image(
 				# file-log detail only, never the Event Log and never a
 				# throttled failure.
 				logger.debug(f"{board_style.capitalize()} image generation stderr (non-fatal): {result.stderr.strip()}")
-			if use_throttle:
-				# A prior failure for THIS style recovering gets its own
-				# Event Log line (e.g. "Classic image generation working
-				# again ...") -- log_recovery() is a no-op unless something
-				# was actually outstanding for `key`, so a clean run stays
-				# silent exactly like before (#28 review).
-				if hasattr(logger, 'log_recovery'):
-					logger.log_recovery(
-						key,
-						f"{board_style.capitalize()} image generation working again for '{device.name}'"
-					)
-				elif hasattr(logger, 'clear_failure'):
-					logger.clear_failure(key)
+			# A prior failure for THIS style recovering gets its own Event
+			# Log line (e.g. "Classic image generation working again ...")
+			# -- log_recovery() is a no-op unless something was actually
+			# outstanding for `key`, so a clean run stays silent exactly
+			# like before (#28 review).
+			logger.log_recovery(
+				key,
+				f"{board_style.capitalize()} image generation working again for '{device.name}'"
+			)
 			return True
 
 		elif result.returncode == 1:
@@ -204,22 +196,28 @@ def _generate_single_image(
 			)
 
 	except subprocess.TimeoutExpired as e:
+		# subprocess hands back bytes here even though `text=True` applies
+		# only to a completed run's stdout/stderr -- decode before folding
+		# into the message, or a "b'...'" repr leaks into the Event Log.
+		stderr = e.stderr
+		if isinstance(stderr, bytes):
+			stderr = stderr.decode('utf-8', errors='replace')
 		return _report_failure(
-			"timeout", f"{board_style.capitalize()} image generation timed out", e.stderr or ""
+			"timeout", f"{board_style.capitalize()} image generation timed out", stderr or ""
 		)
 
 	except FileNotFoundError:
 		return _report_failure("interpreter_not_found", f"Python interpreter not found: {constants.PYTHON3_PATH}")
 
 	except Exception as e:
-		if use_throttle:
-			logger.log_failure(
-				key,
-				f"Unexpected error generating {board_style} image for device '{device.name}': {e}",
-				category=classify_exception(e),
-			)
-		else:
-			logger.exception(f"Unexpected error generating {board_style} image for device '{device.name}'")
+		# exc_info=True keeps the traceback in the file log; the Event Log
+		# line stays the one-liner message (#28 review).
+		logger.log_failure(
+			key,
+			f"Unexpected error generating {board_style} image for device '{device.name}': {e}",
+			category=classify_exception(e),
+			exc_info=True,
+		)
 		return False
 
 
@@ -276,6 +274,12 @@ def _generate_departure_image(
 			logger,
 			plugin_prefs
 		)
+	else:
+		# Drop any throttle state left over from before the style was
+		# disabled, so re-enabling it and hitting the same failure again
+		# reaches the Event Log as new, not suppressed as "unchanged" (#28
+		# review).
+		logger.clear_failure(f"image_gen:{device.id}:classic")
 
 	# Generate modern board if enabled (with _mobile suffix)
 	if generate_modern:
@@ -292,6 +296,8 @@ def _generate_departure_image(
 			logger,
 			plugin_prefs
 		)
+	else:
+		logger.clear_failure(f"image_gen:{device.id}:modern")
 
 	# Update device status based on results
 	if classic_success or modern_success:
@@ -305,9 +311,8 @@ def _generate_departure_image(
 		device.updateStateOnServer('imageGenerationStatus', 'success')
 		device.updateStateOnServer('imageGenerationError', '')
 		logger.debug(f"Generated {' and '.join(status_msg)} image(s) for '{device.name}'")
-		if hasattr(logger, 'clear_failure'):
-			# No-op unless a prior cycle hit "no board styles enabled" below.
-			logger.clear_failure(f"image_gen:{device.id}:config")
+		# No-op unless a prior cycle hit "no board styles enabled" below.
+		logger.clear_failure(f"image_gen:{device.id}:config")
 		return True
 	else:
 		# Both failed (or none were enabled)
@@ -317,10 +322,7 @@ def _generate_departure_image(
 			# Throttled per device like everything else here (#28).
 			error_msg = "No board styles enabled"
 			message = f"{error_msg} for device '{device.name}'"
-			if hasattr(logger, 'log_failure'):
-				logger.log_failure(f"image_gen:{device.id}:config", message, category="no_styles_enabled")
-			else:
-				logger.warning(message)
+			logger.log_failure(f"image_gen:{device.id}:config", message, category="no_styles_enabled")
 		else:
 			# Each failed style already logged its own throttled ERROR (with
 			# stderr detail) above via _generate_single_image; this aggregate

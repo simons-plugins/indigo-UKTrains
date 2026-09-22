@@ -24,20 +24,6 @@ from unittest.mock import Mock, patch
 import plugin
 
 
-class RecordingHandler(logging.Handler):
-    def __init__(self):
-        super().__init__(level=logging.NOTSET)
-        self.records = []
-
-    def emit(self, record):
-        self.records.append(record)
-
-
-@pytest.fixture
-def event_log():
-    return RecordingHandler()
-
-
 @pytest.fixture
 def plugin_logger(tmp_path, event_log):
     plugin_id = f"test-darwinlogin-{uuid.uuid4().hex}"
@@ -93,21 +79,47 @@ class TestDarwinLoginFailureThrottling:
 
         with patch("plugin.nationalRailLogin", return_value=(False, None)):
             plugin.routeUpdate(device_a, "bad_api_key", mock_plugin_paths, plugin_logger)
+            # Repeat for device_a first -- proves per-device suppression is
+            # actually active, so the assertion below (device_b also
+            # reaching the Event Log) can't pass just because throttling is
+            # broken entirely (#28 review: degradation-path coverage).
+            plugin.routeUpdate(device_a, "bad_api_key", mock_plugin_paths, plugin_logger)
+            assert len(event_log.records) == 1
+
             plugin.routeUpdate(device_b, "bad_api_key", mock_plugin_paths, plugin_logger)
 
         assert len(event_log.records) == 2
 
-    def test_login_failure_with_bare_logger_falls_back_to_error_handler(
-        self, mock_device, mock_plugin_paths
+    def test_login_message_names_the_real_reason(
+        self, mock_device, mock_plugin_paths, plugin_logger, event_log
     ):
-        """A logger without the throttling API (log_failure) must not
-        crash routeUpdate -- mirrors the same guard already covered for
-        the Darwin-fetch path."""
-        bare_logger = Mock(spec=["debug", "error", "info"])
-
-        with patch("plugin.nationalRailLogin", return_value=(False, None)):
+        """nationalRailLogin() returns the actual failure reason as its
+        second element on failure (not None) -- routeUpdate must put it in
+        the Event Log line instead of the old generic 'check the API key'
+        (#28 review)."""
+        with patch("plugin.nationalRailLogin", return_value=(False, "Failed to create Darwin REST session: Darwin REST 403 Forbidden: bad key")):
             result = plugin.routeUpdate(
-                mock_device, "bad_api_key", mock_plugin_paths, bare_logger,
+                mock_device, "bad_api_key", mock_plugin_paths, plugin_logger,
             )
 
         assert result is False
+        assert len(event_log.records) == 1
+        assert "403 Forbidden" in event_log.records[0].getMessage()
+
+    def test_missing_api_key_end_to_end_repeats_are_suppressed(
+        self, mock_device, mock_plugin_paths, plugin_logger, event_log
+    ):
+        """Exercises the real nationalRailLogin() (not patched) with a
+        missing API key, end-to-end through routeUpdate -- must reach the
+        Event Log once as ERROR naming the real reason, then stay
+        suppressed on repeats (category='missing_key' is a stable
+        classifier, not a per-call message comparison)."""
+        for _ in range(3):
+            result = plugin.routeUpdate(
+                mock_device, "NO KEY", mock_plugin_paths, plugin_logger,
+            )
+            assert result is False
+
+        assert len(event_log.records) == 1
+        assert event_log.records[0].levelno == logging.ERROR
+        assert "API key is missing" in event_log.records[0].getMessage()

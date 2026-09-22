@@ -9,6 +9,25 @@ from unittest.mock import MagicMock, Mock
 import logging
 
 
+class RecordingHandler(logging.Handler):
+    """Stands in for Indigo's real Event Log handler: records every
+    LogRecord handled instead of writing to a real Event Log.
+
+    Used both as MockPluginBase.indigo_log_handler (so constructing a real
+    Plugin instance wires PluginLogger's WARNING+ forwarding to something
+    observable) and directly by tests that need their own recorder, e.g.
+    attached straight to a PluginLogger's internal logger to see the file
+    log independent of the Event Log threshold.
+    """
+
+    def __init__(self):
+        super().__init__(level=logging.NOTSET)
+        self.records = []
+
+    def emit(self, record):
+        self.records.append(record)
+
+
 class MockDevice:
     """Mock Indigo device for testing"""
 
@@ -61,6 +80,10 @@ class MockPluginBase:
         self.pluginVersion = plugin_version
         self.pluginPrefs = plugin_prefs
         self.logger = logging.getLogger(plugin_id)
+        # Real indigo.PluginBase sets this up for plugins to forward their
+        # own WARNING+ records to; PluginLogger.__init__ reads it via
+        # getattr(self, 'indigo_log_handler', None) (plugin.py).
+        self.indigo_log_handler = RecordingHandler()
 
         # Mock methods
         self.sleep = Mock()
