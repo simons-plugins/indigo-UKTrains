@@ -52,10 +52,15 @@ class RuntimeConfig:
 		Returns:
 			RuntimeConfig instance with current preferences
 		"""
+		try:
+			refresh_freq = max(30, int(prefs.get('updateFreq', '60')))
+		except (ValueError, TypeError):
+			refresh_freq = 60
+
 		return cls(
 			api_key=prefs.get('darwinAPI', 'NO KEY'),
 			create_images=prefs.get('createMaps', "true") == "true",
-			refresh_freq=int(prefs.get('updateFreq', '60')),
+			refresh_freq=refresh_freq,
 			color_scheme=constants.ColorScheme(
 				foreground=prefs.get('forcolour', '#0F0'),
 				background=prefs.get('bgcolour', '#000'),
@@ -94,11 +99,18 @@ class PluginPaths:
 		fonts = root / 'BoardFonts' / 'MFonts'
 		station_codes = root / constants.STATION_CODES_FILE
 
-		# User-configurable image output
+		# User-configurable image output. Anything that doesn't resolve to an
+		# absolute path after stripping whitespace and expanding '~' - empty,
+		# whitespace-only, or the "No images being saved" placeholder
+		# validatePrefsConfigUi writes when createMaps is unticked (see #21) -
+		# falls back to the default instead of being mkdir'd as a relative
+		# path under the process's cwd.
+		default_image_output = Path.home() / 'Documents' / 'IndigoImages'
+		image_output = default_image_output
 		if user_image_path:
-			image_output = Path(user_image_path.strip()).expanduser()
-		else:
-			image_output = Path.home() / 'Documents' / 'IndigoImages'
+			candidate = Path(user_image_path.strip()).expanduser()
+			if candidate.is_absolute():
+				image_output = candidate
 
 		# Ensure image output directory exists
 		image_output.mkdir(parents=True, exist_ok=True)

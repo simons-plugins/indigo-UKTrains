@@ -610,7 +610,7 @@ class Plugin(indigo.PluginBase):
 				# Check image file name
 				if len(devProps['imageFilename']) == 0:
 					errorDict = indigo.Dict()
-					errorDict["stationCode"] = "No file path found for images"
+					errorDict["imageFilename"] = "No file path found for images"
 					errorDict["showAlertText"] = "You must enter a path for your image (e.g. /Users/myIndigo) - no trailing '/'"
 					return (False, devProps, errorDict)
 

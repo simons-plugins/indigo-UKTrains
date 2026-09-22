@@ -132,3 +132,92 @@ class TestValidatePrefsConfigUiUpdateFrequency:
         ok = FakeSelf().validatePrefsConfigUi(devProps)[0]
 
         assert ok is True
+
+
+# ========== config.RuntimeConfig.from_plugin_prefs - update frequency clamp ==========
+#
+# validatePrefsConfigUi rejects an updateFreq below 30 at the config dialog,
+# but runConcurrentThread's self.sleep() reads RuntimeConfig.refresh_freq,
+# which is built independently from raw prefs. A pref saved before this
+# floor existed (or edited outside the dialog) could still drive the poll
+# loop at an arbitrarily low interval, so RuntimeConfig itself must clamp.
+
+class TestRuntimeConfigRefreshFreqClamp:
+    def test_value_below_floor_is_clamped_to_30(self):
+        runtime_config = config.RuntimeConfig.from_plugin_prefs({'updateFreq': '10'})
+
+        assert runtime_config.refresh_freq == 30
+
+    def test_non_numeric_value_falls_back_to_60(self):
+        runtime_config = config.RuntimeConfig.from_plugin_prefs({'updateFreq': 'abc'})
+
+        assert runtime_config.refresh_freq == 60
+
+    def test_value_above_floor_is_kept_as_is(self):
+        runtime_config = config.RuntimeConfig.from_plugin_prefs({'updateFreq': '90'})
+
+        assert runtime_config.refresh_freq == 90
+
+
+# ========== config.PluginPaths.initialize - issue #21 placeholder/non-absolute paths ==========
+#
+# When createMaps is unticked, validatePrefsConfigUi rewrites imageFilename
+# to the sentinel string 'No images being saved'. PluginPaths.initialize
+# used to feed that (and any other non-absolute value) straight into
+# Path(...).mkdir(parents=True), silently creating a literal directory with
+# that name under the process's cwd every startup.
+
+class TestPluginPathsFallsBackForNonAbsolutePaths:
+    def test_placeholder_string_does_not_create_directory_under_cwd(self, tmp_path, monkeypatch):
+        fake_home = tmp_path / "fakehome"
+        fake_home.mkdir()
+        monkeypatch.setenv("HOME", str(fake_home))
+
+        fake_cwd = tmp_path / "cwd"
+        fake_cwd.mkdir()
+        monkeypatch.chdir(fake_cwd)
+
+        paths = config.PluginPaths.initialize(
+            str(tmp_path / "plugin"), user_image_path="No images being saved"
+        )
+
+        assert not (fake_cwd / "No images being saved").exists()
+        assert paths.image_output_dir == fake_home / "Documents" / "IndigoImages"
+        assert paths.image_output_dir.is_absolute()
+
+    def test_whitespace_only_string_does_not_create_directory_under_cwd(self, tmp_path, monkeypatch):
+        fake_home = tmp_path / "fakehome"
+        fake_home.mkdir()
+        monkeypatch.setenv("HOME", str(fake_home))
+
+        fake_cwd = tmp_path / "cwd"
+        fake_cwd.mkdir()
+        monkeypatch.chdir(fake_cwd)
+
+        paths = config.PluginPaths.initialize(
+            str(tmp_path / "plugin"), user_image_path="   "
+        )
+
+        assert list(fake_cwd.iterdir()) == []
+        assert paths.image_output_dir == fake_home / "Documents" / "IndigoImages"
+        assert paths.image_output_dir.is_absolute()
+
+
+# ========== plugin.Plugin.validatePrefsConfigUi - createMaps unticked / placeholder path ==========
+
+class TestValidatePrefsConfigUiCreateMapsUnticked:
+    def test_createMaps_unticked_still_saves(self):
+        devProps = indigo.Dict(valid_prefs(createMaps=False, imageFilename=""))
+
+        ok, returned_props = FakeSelf().validatePrefsConfigUi(devProps)[:2]
+
+        assert ok is True
+        assert returned_props['imageFilename'] == 'No images being saved'
+
+    def test_whitespace_only_path_is_rejected_when_createMaps_ticked(self):
+        devProps = indigo.Dict(valid_prefs(createMaps=True, imageFilename="   "))
+
+        ok, returned_props, errorDict = FakeSelf().validatePrefsConfigUi(devProps)
+
+        assert ok is False
+        assert "imageFilename" in errorDict
