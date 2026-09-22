@@ -26,7 +26,7 @@ plugin_dir = tests_dir.parent / "UKTrains.indigoPlugin" / "Contents" / "Server P
 sys.path.insert(0, str(plugin_dir))
 
 # Import our mocks
-from mocks.mock_indigo import create_mock_indigo, create_mock_device
+from mocks.mock_indigo import create_mock_indigo, create_mock_device, RecordingHandler
 from mocks.mock_darwin import (
     create_mock_darwin_session,
     create_on_time_service,
@@ -34,6 +34,15 @@ from mocks.mock_darwin import (
     create_cancelled_service,
     create_station_board_paddington,
 )
+
+
+@pytest.fixture
+def event_log():
+    """Recording handler standing in for Indigo's Event Log handler --
+    what PluginLogger forwards WARNING+ records to. Shared by every test
+    module that exercises the Event Log throttling/forwarding path, so
+    they don't each carry their own copy of RecordingHandler."""
+    return RecordingHandler()
 
 
 @pytest.fixture(scope="session", autouse=True)

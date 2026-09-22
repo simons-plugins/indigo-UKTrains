@@ -1,0 +1,311 @@
+"""
+Unit tests for PluginLogger's WARNING+ -> Indigo Event Log forwarding and
+per-device failure throttling (GitHub issue #26).
+
+Background: PluginLogger's own Python logger ("Plugin.<id>") is created
+with propagate=False by design, so records never reach the root logger and
+caplog's default (root-attached) handler can't see them -- attaching a
+recording handler directly to the logger is required. We do that twice:
+once standing in for Indigo's real `indigo_log_handler` (the "Event Log
+side"), and once attached straight to PluginLogger's internal logger to
+observe everything that would land in the file log, independent of the
+Event Log forwarding threshold.
+"""
+
+import logging
+import sys
+import threading
+import time
+import uuid
+
+import pytest
+
+import plugin
+from mocks.mock_indigo import RecordingHandler
+
+
+@pytest.fixture
+def plugin_logger(tmp_path, event_log):
+    # Unique logger name per test: logging.getLogger() caches by name, and
+    # while PluginLogger.__init__ clears old handlers each time, a fresh
+    # name keeps tests fully independent.
+    plugin_id = f"test-{uuid.uuid4().hex}"
+    return plugin.PluginLogger(plugin_id, tmp_path, debug=True, event_log_handler=event_log)
+
+
+@pytest.fixture
+def file_log(plugin_logger):
+    """Recording handler attached directly to PluginLogger's internal
+    logger -- captures everything that would land in the file log,
+    regardless of the Event Log WARNING+ threshold."""
+    handler = RecordingHandler()
+    plugin_logger.logger.addHandler(handler)
+    return handler
+
+
+@pytest.mark.unit
+class TestLevelForwarding:
+    """WARNING/ERROR/exception reach the Event Log; DEBUG/INFO stay
+    file-only (the propagate=False intent from issue #26 is preserved)."""
+
+    def test_warning_reaches_event_log(self, plugin_logger, event_log):
+        plugin_logger.warning("a warning")
+
+        assert len(event_log.records) == 1
+        assert event_log.records[0].levelno == logging.WARNING
+        assert event_log.records[0].getMessage() == "a warning"
+
+    def test_error_reaches_event_log(self, plugin_logger, event_log):
+        plugin_logger.error("an error")
+
+        assert len(event_log.records) == 1
+        assert event_log.records[0].levelno == logging.ERROR
+
+    def test_exception_reaches_event_log(self, plugin_logger, event_log):
+        try:
+            raise ValueError("boom")
+        except ValueError:
+            plugin_logger.exception("caught it")
+
+        assert len(event_log.records) == 1
+        assert event_log.records[0].levelno == logging.ERROR
+
+    def test_debug_does_not_reach_event_log(self, plugin_logger, event_log, file_log):
+        plugin_logger.debug("just debug")
+
+        assert event_log.records == []
+        # But it's still in the file log (propagate=False never affected that).
+        assert len(file_log.records) == 1
+        assert file_log.records[0].levelno == logging.DEBUG
+
+    def test_info_does_not_reach_event_log(self, plugin_logger, event_log, file_log):
+        plugin_logger.info("just info")
+
+        assert event_log.records == []
+        assert len(file_log.records) == 1
+        assert file_log.records[0].levelno == logging.INFO
+
+    def test_no_event_log_handler_is_backward_compatible(self, tmp_path):
+        # PluginLogger(..., event_log_handler=None) (the old call signature)
+        # must not raise, and stays file-only exactly like before #26: no
+        # _EventLogForwarder gets attached, so there's nothing to route
+        # WARNING+ records anywhere but the file log.
+        pl = plugin.PluginLogger("test-no-handler", tmp_path, debug=True)
+        file_log = RecordingHandler()
+        pl.logger.addHandler(file_log)
+
+        pl.warning("still file-only")
+
+        assert pl._event_log_handler is None
+        assert len(file_log.records) == 1
+        assert file_log.records[0].levelno == logging.WARNING
+        assert file_log.records[0].getMessage() == "still file-only"
+
+
+@pytest.mark.unit
+class TestFailureThrottling:
+    """routeUpdate retries every cycle; log_failure()/log_recovery() keep
+    the file log complete while throttling the Event Log to: once per
+    distinct failure, and one line on recovery."""
+
+    def test_first_failure_reaches_event_log_as_error(self, plugin_logger, event_log):
+        plugin_logger.log_failure("dev-1", "image generation failed")
+
+        assert len(event_log.records) == 1
+        assert event_log.records[0].levelno == logging.ERROR
+        assert event_log.records[0].getMessage() == "image generation failed"
+
+    def test_repeated_identical_failure_suppressed_on_event_log_only(
+        self, plugin_logger, event_log, file_log
+    ):
+        plugin_logger.log_failure("dev-1", "image generation failed")
+        plugin_logger.log_failure("dev-1", "image generation failed")
+        plugin_logger.log_failure("dev-1", "image generation failed")
+
+        # Event Log: only the first occurrence.
+        assert len(event_log.records) == 1
+
+        # File log: every occurrence still lands -- first at ERROR, the
+        # throttled repeats downgraded to INFO so they don't re-trip the
+        # WARNING+ forwarder.
+        assert [r.levelno for r in file_log.records] == [
+            logging.ERROR, logging.INFO, logging.INFO,
+        ]
+        assert all(r.getMessage() == "image generation failed" for r in file_log.records)
+
+    def test_changed_failure_message_is_not_suppressed(self, plugin_logger, event_log):
+        plugin_logger.log_failure("dev-1", "PIL error in classic image generation")
+        # Repeat first -- proves suppression is actually active, so the
+        # changed-message assertion below can't pass just because
+        # throttling is broken entirely (#28 review: degradation-path
+        # coverage).
+        plugin_logger.log_failure("dev-1", "PIL error in classic image generation")
+        assert len(event_log.records) == 1
+
+        plugin_logger.log_failure("dev-1", "File I/O error in classic image generation")
+
+        assert len(event_log.records) == 2
+        assert [r.levelno for r in event_log.records] == [logging.ERROR, logging.ERROR]
+
+    def test_different_devices_do_not_throttle_each_other(self, plugin_logger, event_log):
+        plugin_logger.log_failure("dev-1", "image generation failed")
+        # Repeat for dev-1 first -- proves per-key suppression is actually
+        # active, so the assertion below (dev-2 also reaching the Event
+        # Log) can't pass just because throttling is broken entirely (#28
+        # review: degradation-path coverage).
+        plugin_logger.log_failure("dev-1", "image generation failed")
+        assert len(event_log.records) == 1
+
+        plugin_logger.log_failure("dev-2", "image generation failed")
+
+        assert len(event_log.records) == 2
+
+    def test_recovery_without_prior_failure_is_a_noop(self, plugin_logger, event_log):
+        plugin_logger.log_recovery("dev-1", "image generation working again")
+
+        assert event_log.records == []
+
+    def test_recovery_after_failure_emits_one_info_line(self, plugin_logger, event_log):
+        plugin_logger.log_failure("dev-1", "image generation failed")
+        plugin_logger.log_recovery("dev-1", "image generation working again for 'dev-1'")
+
+        assert len(event_log.records) == 2
+        assert event_log.records[0].levelno == logging.ERROR
+        assert event_log.records[1].levelno == logging.INFO
+        assert event_log.records[1].getMessage() == "image generation working again for 'dev-1'"
+
+    def test_recovery_is_emitted_only_once(self, plugin_logger, event_log):
+        plugin_logger.log_failure("dev-1", "image generation failed")
+        plugin_logger.log_recovery("dev-1", "image generation working again")
+        plugin_logger.log_recovery("dev-1", "image generation working again")
+
+        # Second call has nothing outstanding to clear -- no-op.
+        assert len(event_log.records) == 2
+
+    def test_same_failure_resurfaces_after_recovery(self, plugin_logger, event_log):
+        plugin_logger.log_failure("dev-1", "image generation failed")
+        plugin_logger.log_recovery("dev-1", "image generation working again")
+        plugin_logger.log_failure("dev-1", "image generation failed")
+
+        # failure, recovery, then the SAME message recurring: all three
+        # reach the Event Log, because recovery cleared the throttle state.
+        assert len(event_log.records) == 3
+        assert [r.levelno for r in event_log.records] == [
+            logging.ERROR, logging.INFO, logging.ERROR,
+        ]
+
+
+@pytest.mark.unit
+class TestClearDevice:
+    """clear_device() drops all throttle state for one device id, so a
+    stale failure recorded before deviceStopComm/deviceDeleted doesn't
+    suppress the same failure resurfacing once the device is active again
+    (#28 review)."""
+
+    def test_clears_all_keys_for_the_device(self, plugin_logger, event_log):
+        plugin_logger.log_failure("darwin_fetch:1", "fetch failed")
+        plugin_logger.log_failure("darwin_login:1", "login failed")
+        plugin_logger.log_failure("image_gen:1", "image gen failed")
+        plugin_logger.log_failure("image_gen:1:classic", "classic failed")
+        plugin_logger.log_failure("darwin_fetch:2", "fetch failed")
+        assert len(event_log.records) == 5
+
+        plugin_logger.clear_device(1)
+
+        # Same failures for device 1 are "new" again.
+        plugin_logger.log_failure("darwin_fetch:1", "fetch failed")
+        plugin_logger.log_failure("darwin_login:1", "login failed")
+        plugin_logger.log_failure("image_gen:1", "image gen failed")
+        plugin_logger.log_failure("image_gen:1:classic", "classic failed")
+        assert len(event_log.records) == 9
+
+        # Device 2 was untouched -- its repeat is still throttled.
+        plugin_logger.log_failure("darwin_fetch:2", "fetch failed")
+        assert len(event_log.records) == 9
+
+    def test_does_not_match_another_device_whose_id_is_a_substring(
+        self, plugin_logger, event_log
+    ):
+        plugin_logger.log_failure("darwin_fetch:12", "fetch failed")
+        assert len(event_log.records) == 1
+
+        plugin_logger.clear_device(1)
+
+        # Still throttled -- clear_device(1) must not also clear device 12.
+        plugin_logger.log_failure("darwin_fetch:12", "fetch failed")
+        assert len(event_log.records) == 1
+
+    def test_clear_of_unknown_device_is_a_noop(self, plugin_logger, event_log):
+        plugin_logger.log_failure("darwin_fetch:1", "fetch failed")
+        plugin_logger.clear_device(999)  # never failed -- nothing to drop
+        plugin_logger.log_failure("darwin_fetch:1", "fetch failed")
+
+        # Still throttled -- clear_device(999) didn't touch device 1's key.
+        assert len(event_log.records) == 1
+
+    def test_failure_clear_device_same_failure_reaches_event_log_again(
+        self, plugin_logger, event_log
+    ):
+        """The exact scenario from the review: failure, clear_device, same
+        failure -> Event Log ERROR again."""
+        plugin_logger.log_failure("image_gen:5:classic", "PIL error")
+        assert len(event_log.records) == 1
+        assert event_log.records[0].levelno == logging.ERROR
+
+        plugin_logger.clear_device(5)
+
+        plugin_logger.log_failure("image_gen:5:classic", "PIL error")
+        assert len(event_log.records) == 2
+        assert event_log.records[1].levelno == logging.ERROR
+
+
+@pytest.mark.unit
+class TestFailureStateThreadSafety:
+    """clear_device() (deviceStopComm/deviceDeleted) iterates
+    _failure_state while runConcurrentThread's polling loop can be writing
+    to it for a different device on another thread at the same time --
+    both go through the same lock so clear_device() never sees the dict
+    mutate mid-iteration (#28 review)."""
+
+    def test_clear_device_while_another_thread_inserts_does_not_raise(self, plugin_logger):
+        # Lowering the GIL switch interval makes the interpreter hand off
+        # between threads far more often, so an unguarded clear_device()
+        # reliably hits "dictionary changed size during iteration" within
+        # a fraction of a second instead of maybe never in a short test
+        # run -- this is what makes the test a real regression check
+        # rather than one that happens to pass either way.
+        original_interval = sys.getswitchinterval()
+        sys.setswitchinterval(0.00001)
+
+        stop = threading.Event()
+        errors = []
+
+        def writer():
+            i = 0
+            while not stop.is_set():
+                try:
+                    key = f"darwin_fetch:{100 + (i % 50)}"
+                    plugin_logger.log_failure(key, f"fetch failed {i}")
+                    plugin_logger.log_recovery(key, "recovered")
+                except Exception as exc:  # pragma: no cover - failure path only
+                    errors.append(exc)
+                i += 1
+
+        writer_threads = [threading.Thread(target=writer) for _ in range(4)]
+        for thread in writer_threads:
+            thread.start()
+        try:
+            deadline = time.monotonic() + 0.5
+            while time.monotonic() < deadline:
+                # device 999 never collides with the writer's ids
+                # (100-149) -- this is purely about clear_device() not
+                # raising while the dict is being mutated concurrently.
+                plugin_logger.clear_device(999)
+        finally:
+            stop.set()
+            for thread in writer_threads:
+                thread.join(timeout=5)
+            sys.setswitchinterval(original_interval)
+
+        assert not any(thread.is_alive() for thread in writer_threads)
+        assert errors == []

@@ -31,6 +31,7 @@
 import os, sys, time, datetime, traceback, re
 import tempfile
 import subprocess
+import threading
 from subprocess import call
 from dataclasses import dataclass
 from pathlib import Path
@@ -72,10 +73,31 @@ except ImportError:
 
 # ========== Plugin Logger Class ==========
 
+class _EventLogForwarder(logging.Handler):
+	"""Forwards WARNING+ records from PluginLogger's file-only logger to
+	Indigo's own Event Log handler, so PluginLogger keeps propagate=False
+	(debug/info chatter stays file-only) while genuine problems still
+	surface to the user. Reuses the plugin's real indigo_log_handler
+	instance via handle() (not a second logger.log() call), so there's no
+	recursion and the Event Log line looks identical to one logged via
+	self.logger."""
+
+	def __init__(self, indigo_log_handler: logging.Handler, level=logging.WARNING):
+		super().__init__(level=level)
+		self._indigo_log_handler = indigo_log_handler
+
+	def emit(self, record: logging.LogRecord):
+		try:
+			self._indigo_log_handler.handle(record)
+		except Exception:
+			self.handleError(record)
+
+
 class PluginLogger:
 	"""Structured logger for UK-Trains plugin with rotating file handler"""
 
-	def __init__(self, plugin_id: str, log_dir: Path, debug: bool = False):
+	def __init__(self, plugin_id: str, log_dir: Path, debug: bool = False,
+				 event_log_handler: Optional[logging.Handler] = None):
 		"""
 		Initialize plugin logger.
 
@@ -83,6 +105,9 @@ class PluginLogger:
 			plugin_id: Unique plugin identifier
 			log_dir: Directory for log files
 			debug: Enable debug-level logging
+			event_log_handler: Indigo's own indigo_log_handler (self.indigo_log_handler
+				on the Plugin instance). When given, WARNING+ records also reach the
+				Indigo Event Log; DEBUG/INFO stay file-only (issue #26).
 		"""
 		self.logger = logging.getLogger(f'Plugin.{plugin_id}')
 		self.logger.setLevel(logging.DEBUG if debug else logging.INFO)
@@ -109,6 +134,19 @@ class PluginLogger:
 
 		self.logger.addHandler(file_handler)
 
+		# WARNING+ also reaches the Indigo Event Log (see _EventLogForwarder).
+		# DEBUG/INFO stay file-only, same as before.
+		self._event_log_handler = event_log_handler
+		if event_log_handler is not None:
+			self.logger.addHandler(_EventLogForwarder(event_log_handler))
+
+		# Per-key state for log_failure()/log_recovery() throttling below.
+		# Guarded by _failure_state_lock: clear_device() iterates it from
+		# deviceStopComm/deviceDeleted while runConcurrentThread's polling
+		# loop can be writing to it for a different device at the same time.
+		self._failure_state: Dict[str, str] = {}
+		self._failure_state_lock = threading.Lock()
+
 	def debug(self, msg: str, **kwargs):
 		"""Log debug message"""
 		self.logger.debug(msg, **kwargs)
@@ -134,6 +172,78 @@ class PluginLogger:
 		level = logging.DEBUG if enabled else logging.INFO
 		self.logger.setLevel(level)
 
+	def log_failure(self, key: str, message: str, category: Optional[str] = None,
+					 exc_info: bool = False):
+		"""Log a failure that may repeat every polling cycle (e.g. image
+		generation retried in routeUpdate). The file log gets every
+		occurrence; the Event Log gets it only the first time for `key`,
+		or again once the failure changes. Call log_recovery() on success so
+		a later recurrence is treated as new again.
+
+		`message` is always what gets logged (so callers can fold in
+		varying detail like subprocess stderr). `category`, when given, is
+		what decides whether this is an "unchanged repeat" -- pass a stable
+		classifier (e.g. an exit code or exception type name) when `message`
+		itself may vary cycle to cycle even though the underlying failure
+		hasn't changed. Defaults to `message` when omitted, matching the old
+		behaviour. `exc_info`, when True, keeps the traceback in the file
+		log for an unexpected exception (#28 review) -- the Event Log line
+		itself is still just `message`.
+		"""
+		compare_value = message if category is None else category
+		with self._failure_state_lock:
+			unchanged = self._failure_state.get(key) == compare_value
+			if not unchanged:
+				self._failure_state[key] = compare_value
+		if unchanged:
+			# Unchanged repeat: keep it in the file log only.
+			self.logger.info(message, exc_info=exc_info)
+		else:
+			self.logger.error(message, exc_info=exc_info)
+
+	def log_recovery(self, key: str, message: str):
+		"""Call after a successful cycle for `key`. No-op unless `key` had
+		a failure logged via log_failure(); otherwise clears that failure
+		and emits one INFO line straight to the Event Log."""
+		with self._failure_state_lock:
+			had_failure = self._failure_state.pop(key, None) is not None
+		if not had_failure:
+			return
+		self.logger.info(message)
+		if self._event_log_handler is not None:
+			record = self.logger.makeRecord(
+				self.logger.name, logging.INFO, __file__, 0, message, (), None
+			)
+			self._event_log_handler.handle(record)
+
+	def clear_failure(self, key: str):
+		"""Silently clear a failure key without logging a recovery line.
+
+		Use this for a finer-grained key (e.g. per-style image generation)
+		whose recovery is already covered by a broader key's log_recovery()
+		call (e.g. per-device) -- so a device shows exactly one "working
+		again" Event Log line, not one per sub-key.
+		"""
+		with self._failure_state_lock:
+			self._failure_state.pop(key, None)
+
+	def clear_device(self, dev_id) -> None:
+		"""Drop all throttle state belonging to `dev_id` (e.g.
+		darwin_fetch:<id>, darwin_login:<id>, image_gen:<id>:classic,
+		image_gen:<id>:config).
+
+		Call from deviceStopComm/deviceDeleted so a stale failure recorded
+		before the device stopped/was deleted doesn't suppress the same
+		failure resurfacing when it (or a device that reuses the id) starts
+		again (#28). Matches the id as its own colon-delimited key segment,
+		not a bare substring, so clearing device 1 doesn't also clear
+		device 12.
+		"""
+		target = str(dev_id)
+		with self._failure_state_lock:
+			stale = [key for key in self._failure_state if key.split(':')[1:2] == [target]]
+			for key in stale:
+				del self._failure_state[key]
 
 # ========== Configuration Classes (extracted to config.py) ==========
 # Import configuration classes from config module
@@ -187,7 +297,13 @@ def errorHandler(error_msg: str):
 
 # ========== Darwin API Functions (extracted to darwin_api.py) ==========
 # Import Darwin API wrapper functions and retry decorator
-from darwin_api import darwin_api_retry, _fetch_station_board, _fetch_service_details, nationalRailLogin
+from darwin_api import (
+	darwin_api_retry, _fetch_station_board, _fetch_service_details,
+	nationalRailLogin, MISSING_API_KEY_REASON,
+)
+
+# ========== Failure classification (extracted to error_classification.py) ==========
+from error_classification import classify_exception
 
 
 # Get darwin access modules and other standard dependencies in place
@@ -298,10 +414,20 @@ def routeUpdate(dev, apiAccess, paths, logger, plugin_prefs=None):
 	# Login to Darwin
 	accessLogin = nationalRailLogin(apiAccess)
 	if not accessLogin[0]:
-		# Login failed so ignore and return
+		# Login failed (missing/invalid API key, or the session couldn't be
+		# created) -- nationalRailLogin returns the specific reason as its
+		# second element instead of just None, so the Event Log line names
+		# it instead of always saying "check the API key" (#28 review).
+		# Retried every cycle same as a fetch failure, so it's throttled the
+		# same way.
+		reason = accessLogin[1] or "unknown error"
+		category = "missing_key" if reason == MISSING_API_KEY_REASON else classify_exception(Exception(reason))
+		login_msg = f"Darwin login failed for '{dev.name}': {reason} - will retry next cycle"
+		logger.log_failure(f"darwin_login:{dev.id}", login_msg, category=category)
 		return False
 
 	darwinSession = accessLogin[1]
+	logger.log_recovery(f"darwin_login:{dev.id}", f"Darwin login working again for '{dev.name}'")
 
 	# Clear all previous train data on device
 	_clear_device_states(dev)
@@ -316,8 +442,19 @@ def routeUpdate(dev, apiAccess, paths, logger, plugin_prefs=None):
 	try:
 		stationBoardDetails = _fetch_station_board(darwinSession, stationStartCrs, stationEndCrs)
 	except (WebServiceError, Exception) as e:
-		errorHandler(f'WARNING ** Darwin REST request failed: {e} - will retry later when server less busy **')
+		# Retried every cycle on a persistent Darwin outage -- throttled so
+		# the Event Log gets it once (then again only on change/recovery),
+		# while the file log still gets every occurrence. `category` uses
+		# classify_exception() rather than the bare exception type name:
+		# nredarwin/webservice.py raises WebServiceError for nearly
+		# everything (network outage, HTTP errors, malformed JSON), so the
+		# type name alone would suppress e.g. a genuine outage -> 401
+		# transition as "the same failure" (#28 review).
+		fetch_msg = f"Darwin REST request failed for '{dev.name}': {e} - will retry later when server less busy"
+		logger.log_failure(f"darwin_fetch:{dev.id}", fetch_msg, category=classify_exception(e))
 		return False
+
+	logger.log_recovery(f"darwin_fetch:{dev.id}", f"Darwin REST request working again for '{dev.name}'")
 
 	# Update station metadata on device
 	station_name = getattr(stationBoardDetails, 'location_name', 'Unknown Station')
@@ -406,7 +543,12 @@ def routeUpdate(dev, apiAccess, paths, logger, plugin_prefs=None):
 			dev.updateStateOnServer('image_content_hash', current_hash)
 			logger.debug(f"Updated content hash for '{dev.name}'")
 		else:
-			logger.error(f"Image generation failed for '{dev.name}', will retry next cycle")
+			# Retried every cycle on a persistent failure. image_generator.py
+			# already logs a specific throttled ERROR per failing style (with
+			# stderr detail) -- this rollup would just be a second, less
+			# specific Event Log line for the same event, so it stays
+			# file-only (#28 review).
+			logger.info(f"Image generation failed for '{dev.name}', will retry next cycle")
 	else:
 		# Content unchanged - skip generation
 		logger.debug(f"Board content unchanged for '{dev.name}', skipping image generation")
@@ -469,7 +611,13 @@ class Plugin(indigo.PluginBase):
 
 		# Create structured logger using paths object
 		debug_enabled = pluginPrefs.get('checkboxDebug1', False)
-		self.plugin_logger = PluginLogger(pluginId, self.paths.log_dir, debug_enabled)
+		# indigo.PluginBase.__init__ above sets up self.indigo_log_handler; pass it
+		# through so WARNING+ from plugin_logger also reaches the Event Log (#26).
+		# getattr guards test doubles that don't set the attribute.
+		self.plugin_logger = PluginLogger(
+			pluginId, self.paths.log_dir, debug_enabled,
+			event_log_handler=getattr(self, 'indigo_log_handler', None)
+		)
 		self.plugin_logger.info(f"{pluginDisplayName} v{pluginVersion} initializing")
 		self._warn_if_image_path_fallback()
 
@@ -753,11 +901,16 @@ class Plugin(indigo.PluginBase):
 			dev.updateStateOnServer('deviceActive', False)
 
 	def deviceStopComm(self, dev):
-		return
+		# Drop throttle state for this device (darwin_fetch/darwin_login/
+		# image_gen keys) so a failure recorded before it stopped doesn't
+		# suppress the same failure resurfacing once it's communicating
+		# again (#28).
+		self.plugin_logger.clear_device(dev.id)
 
 	def deviceDeleted(self, dev):
 		# Special routines for deleted devices
-		pass
+		super().deviceDeleted(dev)
+		self.plugin_logger.clear_device(dev.id)
 
 	########################################
 	# Sensor Action callback
@@ -1107,7 +1260,11 @@ class Plugin(indigo.PluginBase):
 						dev.updateStateImageOnServer(indigo.kStateImageSel.SensorOff)
 						dev.updateStateOnServer('deviceStatus', value = 'Awaiting update')
 						if self.config.debug:
-							self.plugin_logger.error('** Error updating device '+dev.name+' SOAP server failure **')
+							# routeUpdate() already logged the specific reason
+							# (login/fetch/image-gen) via the plugin logger's
+							# throttled ERROR path -- this is just a debug-only
+							# breadcrumb, not a second Event Log line (#28 review).
+							self.plugin_logger.debug('** Update failed for '+dev.name+'; see earlier message **')
 					else:
 						# Success
 						if dev.states["stationIssues"]:

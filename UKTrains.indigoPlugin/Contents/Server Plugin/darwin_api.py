@@ -23,21 +23,28 @@ import constants
 
 
 def _log_retry_attempt(retry_state):
-    """Callback to log retry attempts for Darwin API calls."""
+    """Callback to log retry attempts for Darwin API calls.
+
+    File-only INFO, not WARNING: this fires on every tenacity retry, so
+    during a persistent outage it would otherwise reach the Indigo Event
+    Log (via PluginLogger's WARNING+ forwarder) once per attempt, every
+    refresh cycle -- routeUpdate's own throttled log_failure() call already
+    surfaces the outage there once (#28 review).
+    """
     attempt_number = retry_state.attempt_number
     if attempt_number > 1:
         try:
             if hasattr(sys.modules['__main__'], 'plugin'):
                 plugin = sys.modules['__main__'].plugin
                 if hasattr(plugin, 'plugin_logger'):
-                    plugin.plugin_logger.warning(
+                    plugin.plugin_logger.info(
                         f"API call failed (attempt {attempt_number}), retrying in "
                         f"{retry_state.next_action.sleep} seconds..."
                     )
                     return
         except Exception:
             pass
-        print(f"WARNING: API call failed (attempt {attempt_number}), retrying...", file=sys.stderr)
+        print(f"INFO: API call failed (attempt {attempt_number}), retrying...", file=sys.stderr)
 
 
 def darwin_api_retry(max_attempts: int = 3):
@@ -109,6 +116,12 @@ def _fetch_service_details(session: Any, service_id: str) -> Optional[Any]:
         return None
 
 
+# Returned as the reason string on a missing/blank API key -- routeUpdate
+# compares against this constant to pick the "missing_key" throttle
+# category rather than classify_exception() (#28 review).
+MISSING_API_KEY_REASON = 'Darwin API key is missing - set it in plugin config'
+
+
 @darwin_api_retry(max_attempts=2)
 def nationalRailLogin(api_key: str = 'NO KEY',
                       base_url: Optional[str] = None) -> Tuple[bool, Optional[Any]]:
@@ -120,19 +133,18 @@ def nationalRailLogin(api_key: str = 'NO KEY',
             "Live Departure Board" product path).
 
     Returns:
-        Tuple of (success, session). `session` is None on failure.
+        Tuple of (success, session_or_reason). On success, the second
+        element is the DarwinLdbSession. On failure, it's a human-readable
+        reason string -- not None -- so the caller can put the actual
+        reason in its Event Log line instead of a generic "check the API
+        key" (#28 review).
     """
     if not api_key or api_key in ('NO KEY', 'NO KEY ENTERED'):
-        print('CRITICAL FAILURE ** Darwin API key is missing — set it in plugin config **',
-              file=sys.stderr)
-        return False, None
+        return False, MISSING_API_KEY_REASON
 
     try:
         return True, DarwinLdbSession(api_key=api_key, base_url=base_url)
     except WebServiceError as e:
-        print(f'WARNING ** Failed to create Darwin REST session: {e} **', file=sys.stderr)
-        return False, None
+        return False, f'Failed to create Darwin REST session: {e}'
     except Exception as e:
-        print(f'WARNING ** Failed to log in to Darwin: {e} - check API key and internet connection **',
-              file=sys.stderr)
-        return False, None
+        return False, f'Failed to log in to Darwin: {e} - check API key and internet connection'
