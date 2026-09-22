@@ -167,18 +167,27 @@ class PluginLogger:
 		level = logging.DEBUG if enabled else logging.INFO
 		self.logger.setLevel(level)
 
-	def log_failure(self, key: str, message: str):
+	def log_failure(self, key: str, message: str, category: Optional[str] = None):
 		"""Log a failure that may repeat every polling cycle (e.g. image
 		generation retried in routeUpdate). The file log gets every
 		occurrence; the Event Log gets it only the first time for `key`,
-		or again once `message` changes. Call log_recovery() on success so
-		a later recurrence of the same message is treated as new again.
+		or again once the failure changes. Call log_recovery() on success so
+		a later recurrence is treated as new again.
+
+		`message` is always what gets logged (so callers can fold in
+		varying detail like subprocess stderr). `category`, when given, is
+		what decides whether this is an "unchanged repeat" -- pass a stable
+		classifier (e.g. an exit code or exception type name) when `message`
+		itself may vary cycle to cycle even though the underlying failure
+		hasn't changed. Defaults to `message` when omitted, matching the old
+		behaviour.
 		"""
-		if self._failure_state.get(key) == message:
+		compare_value = message if category is None else category
+		if self._failure_state.get(key) == compare_value:
 			# Unchanged repeat: keep it in the file log only.
 			self.logger.info(message)
 		else:
-			self._failure_state[key] = message
+			self._failure_state[key] = compare_value
 			self.logger.error(message)
 
 	def log_recovery(self, key: str, message: str):
@@ -194,6 +203,15 @@ class PluginLogger:
 			)
 			self._event_log_handler.handle(record)
 
+	def clear_failure(self, key: str):
+		"""Silently clear a failure key without logging a recovery line.
+
+		Use this for a finer-grained key (e.g. per-style image generation)
+		whose recovery is already covered by a broader key's log_recovery()
+		call (e.g. per-device) -- so a device shows exactly one "working
+		again" Event Log line, not one per sub-key.
+		"""
+		self._failure_state.pop(key, None)
 
 # ========== Configuration Classes (extracted to config.py) ==========
 # Import configuration classes from config module
@@ -376,8 +394,18 @@ def routeUpdate(dev, apiAccess, paths, logger, plugin_prefs=None):
 	try:
 		stationBoardDetails = _fetch_station_board(darwinSession, stationStartCrs, stationEndCrs)
 	except (WebServiceError, Exception) as e:
-		errorHandler(f'WARNING ** Darwin REST request failed: {e} - will retry later when server less busy **')
+		# Retried every cycle on a persistent Darwin outage -- throttled so
+		# the Event Log gets it once (then again only on change/recovery),
+		# while the file log still gets every occurrence.
+		fetch_msg = f"Darwin REST request failed for '{dev.name}': {e} - will retry later when server less busy"
+		if hasattr(logger, 'log_failure'):
+			logger.log_failure(f"darwin_fetch:{dev.id}", fetch_msg, category=type(e).__name__)
+		else:
+			errorHandler(f'WARNING ** {fetch_msg} **')
 		return False
+
+	if hasattr(logger, 'log_recovery'):
+		logger.log_recovery(f"darwin_fetch:{dev.id}", f"Darwin REST request working again for '{dev.name}'")
 
 	# Update station metadata on device
 	station_name = getattr(stationBoardDetails, 'location_name', 'Unknown Station')
