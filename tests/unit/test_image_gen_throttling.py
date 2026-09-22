@@ -154,12 +154,14 @@ class TestPersistentFailureThrottling:
         assert "PIL error" in event_log.records[0].getMessage()
         assert "File I/O error" in event_log.records[1].getMessage()
 
-    def test_success_clears_failure_silently_then_resurfaces_as_new(
+    def test_success_after_failure_emits_one_per_style_recovery_line(
         self, plugin_logger, event_log, paths
     ):
-        """Success after failure must not itself emit a second Event Log
-        line (the device-level recovery line in routeUpdate already covers
-        that) -- but it must re-arm the throttle, so the same failure
+        """Success after a per-style failure must emit exactly one Event
+        Log recovery INFO naming that style (#28 review: previously this
+        was a silent clear_failure(), so a user watching only classic fail
+        and later recover -- with modern untouched -- never saw it come
+        back). It must also re-arm the throttle, so the same failure
         category recurring afterwards counts as new again."""
         device = make_device()
 
@@ -177,8 +179,12 @@ class TestPersistentFailureThrottling:
                 paths.parameters_filename, True, "classic", device, plugin_logger,
             )
             assert result is True
-            # No recovery line from the per-style clear -- still just the 1.
-            assert len(event_log.records) == 1
+            # Recovery line naming the style, and only one.
+            assert len(event_log.records) == 2
+            assert event_log.records[1].levelno == logging.INFO
+            assert event_log.records[1].getMessage() == (
+                "Classic image generation working again for 'Test Device'"
+            )
 
             run_mock.return_value = _run_result(2, stderr="font missing again")
             _generate_single_image(
@@ -186,8 +192,62 @@ class TestPersistentFailureThrottling:
                 paths.parameters_filename, True, "classic", device, plugin_logger,
             )
 
-        assert len(event_log.records) == 2
-        assert [r.levelno for r in event_log.records] == [logging.ERROR, logging.ERROR]
+        assert len(event_log.records) == 3
+        assert [r.levelno for r in event_log.records] == [
+            logging.ERROR, logging.INFO, logging.ERROR,
+        ]
+
+    def test_success_with_no_prior_failure_emits_no_recovery_line(
+        self, plugin_logger, event_log, paths
+    ):
+        """log_recovery() is a no-op unless something was actually
+        outstanding for that style's key -- a clean run must stay exactly
+        as silent as the old clear_failure() call did."""
+        device = make_device()
+
+        with patch("image_generator.subprocess.run") as run_mock:
+            run_mock.return_value = _run_result(0)
+            result = _generate_single_image(
+                paths.plugin_root, paths.image_filename, paths.text_filename,
+                paths.parameters_filename, True, "classic", device, plugin_logger,
+            )
+
+        assert result is True
+        assert event_log.records == []
+
+    def test_two_styles_recover_independently_with_distinct_lines(
+        self, plugin_logger, event_log, paths
+    ):
+        """Classic and modern are tracked under separate per-style keys, so
+        each style's recovery gets its own line naming that style -- e.g.
+        classic recovering while modern is still down (or was never
+        enabled) must not be silent."""
+        device = make_device()
+        modern_filename = paths.image_filename.parent / "board_mobile.png"
+
+        with patch("image_generator.subprocess.run") as run_mock:
+            run_mock.return_value = _run_result(2, stderr="font missing")
+            _generate_single_image(
+                paths.plugin_root, paths.image_filename, paths.text_filename,
+                paths.parameters_filename, True, "classic", device, plugin_logger,
+            )
+            _generate_single_image(
+                paths.plugin_root, modern_filename, paths.text_filename,
+                paths.parameters_filename, True, "modern", device, plugin_logger,
+            )
+            assert len(event_log.records) == 2
+
+            run_mock.return_value = _run_result(0)
+            _generate_single_image(
+                paths.plugin_root, paths.image_filename, paths.text_filename,
+                paths.parameters_filename, True, "classic", device, plugin_logger,
+            )
+
+        # Only classic recovered -- one new recovery line, naming classic.
+        assert len(event_log.records) == 3
+        assert event_log.records[2].levelno == logging.INFO
+        assert "Classic image generation working again" in event_log.records[2].getMessage()
+        assert "Modern" not in event_log.records[2].getMessage()
 
     def test_two_devices_do_not_throttle_each_other(self, plugin_logger, event_log, paths):
         device_a = make_device(dev_id=1, name="Device A")
@@ -242,6 +302,51 @@ class TestPersistentFailureThrottling:
 
         assert result is False
         assert bare_logger.error.call_count == 1
+
+
+@pytest.mark.unit
+class TestGenericExceptionClassification:
+    """The `except Exception` branch (subprocess.run itself raising,
+    rather than a non-zero exit code) used to key its throttle category on
+    the bare exception type name -- so two different OSError messages
+    would collapse into one Event Log ERROR, and never reappear. It now
+    uses classify_exception() like the Darwin-fetch path (#28 review)."""
+
+    def test_same_exception_type_different_message_is_not_suppressed(
+        self, plugin_logger, event_log, paths
+    ):
+        device = make_device()
+
+        with patch("image_generator.subprocess.run") as run_mock:
+            run_mock.side_effect = OSError("disk full")
+            _generate_single_image(
+                paths.plugin_root, paths.image_filename, paths.text_filename,
+                paths.parameters_filename, True, "classic", device, plugin_logger,
+            )
+            run_mock.side_effect = OSError("permission denied")
+            _generate_single_image(
+                paths.plugin_root, paths.image_filename, paths.text_filename,
+                paths.parameters_filename, True, "classic", device, plugin_logger,
+            )
+
+        assert len(event_log.records) == 2
+        assert [r.levelno for r in event_log.records] == [logging.ERROR, logging.ERROR]
+
+    def test_same_exception_message_with_varying_numbers_is_one_event_log_error(
+        self, plugin_logger, event_log, paths
+    ):
+        device = make_device()
+
+        with patch("image_generator.subprocess.run") as run_mock:
+            for wrote, of in [(1024, 4096), (2048, 8192), (3000, 9000)]:
+                run_mock.side_effect = OSError(f"disk full: wrote {wrote} of {of} bytes")
+                _generate_single_image(
+                    paths.plugin_root, paths.image_filename, paths.text_filename,
+                    paths.parameters_filename, True, "classic", device, plugin_logger,
+                )
+
+        assert len(event_log.records) == 1
+        assert event_log.records[0].levelno == logging.ERROR
 
 
 @pytest.mark.unit

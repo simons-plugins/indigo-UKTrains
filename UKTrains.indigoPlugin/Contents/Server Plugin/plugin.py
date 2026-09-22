@@ -213,6 +213,39 @@ class PluginLogger:
 		"""
 		self._failure_state.pop(key, None)
 
+	def log_failure_quiet(self, key: str, message: str, category: Optional[str] = None):
+		"""Like log_failure(), but never reaches the Event Log -- always
+		file-only INFO, even on the first occurrence.
+
+		Use this for an aggregate/rollup line that would otherwise duplicate
+		a more specific ERROR a caller already logged via log_failure() for
+		a related key (e.g. routeUpdate's device-level "Image generation
+		failed" line vs. image_generator.py's per-style ERROR with stderr
+		detail, #28). Still updates throttle state for `key`, so
+		clear_failure()/clear_device() behave the same as for an ordinary
+		log_failure() key.
+		"""
+		compare_value = message if category is None else category
+		self._failure_state[key] = compare_value
+		self.logger.info(message)
+
+	def clear_device(self, dev_id) -> None:
+		"""Drop all throttle state belonging to `dev_id` (e.g.
+		darwin_fetch:<id>, darwin_login:<id>, image_gen:<id>,
+		image_gen:<id>:classic, image_gen:<id>:config).
+
+		Call from deviceStopComm/deviceDeleted so a stale failure recorded
+		before the device stopped/was deleted doesn't suppress the same
+		failure resurfacing when it (or a device that reuses the id) starts
+		again (#28). Matches the id as its own colon-delimited key segment,
+		not a bare substring, so clearing device 1 doesn't also clear
+		device 12.
+		"""
+		target = str(dev_id)
+		stale = [key for key in self._failure_state if key.split(':')[1:2] == [target]]
+		for key in stale:
+			del self._failure_state[key]
+
 # ========== Configuration Classes (extracted to config.py) ==========
 # Import configuration classes from config module
 from config import PluginConfig, PluginPaths, PluginConfiguration, RuntimeConfig
@@ -266,6 +299,9 @@ def errorHandler(error_msg: str):
 # ========== Darwin API Functions (extracted to darwin_api.py) ==========
 # Import Darwin API wrapper functions and retry decorator
 from darwin_api import darwin_api_retry, _fetch_station_board, _fetch_service_details, nationalRailLogin
+
+# ========== Failure classification (extracted to error_classification.py) ==========
+from error_classification import classify_exception
 
 
 # Get darwin access modules and other standard dependencies in place
@@ -355,6 +391,23 @@ from image_generator import (
 # _format_station_board moved to image_generator.py
 
 
+def _log_if_supported(logger, method_name: str, *args, **kwargs) -> bool:
+	"""Call logger.<method_name>(*args, **kwargs) only if `logger` supports
+	it, and report whether it did.
+
+	Callers may be handed a bare `logging.Logger` (or a narrowly-spec'd
+	test double) that lacks PluginLogger's throttling API (log_failure/
+	log_recovery/log_failure_quiet/clear_failure); this keeps every
+	routeUpdate call site guarded the same way instead of some being
+	guarded and others not (#28 review).
+	"""
+	method = getattr(logger, method_name, None)
+	if method is None:
+		return False
+	method(*args, **kwargs)
+	return True
+
+
 def routeUpdate(dev, apiAccess, paths, logger, plugin_prefs=None):
 	"""
 	Update train departure device with latest information from Darwin API.
@@ -376,10 +429,17 @@ def routeUpdate(dev, apiAccess, paths, logger, plugin_prefs=None):
 	# Login to Darwin
 	accessLogin = nationalRailLogin(apiAccess)
 	if not accessLogin[0]:
-		# Login failed so ignore and return
+		# Login failed (missing/invalid API key, or the session couldn't be
+		# created) -- nationalRailLogin already prints the specific reason
+		# to stderr. Retried every cycle same as a fetch failure, so it's
+		# throttled the same way (#28).
+		login_msg = f"Darwin login failed for '{dev.name}' - check the API key, will retry next cycle"
+		if not _log_if_supported(logger, 'log_failure', f"darwin_login:{dev.id}", login_msg):
+			errorHandler(f'WARNING ** {login_msg} **')
 		return False
 
 	darwinSession = accessLogin[1]
+	_log_if_supported(logger, 'log_recovery', f"darwin_login:{dev.id}", f"Darwin login working again for '{dev.name}'")
 
 	# Clear all previous train data on device
 	_clear_device_states(dev)
@@ -396,16 +456,18 @@ def routeUpdate(dev, apiAccess, paths, logger, plugin_prefs=None):
 	except (WebServiceError, Exception) as e:
 		# Retried every cycle on a persistent Darwin outage -- throttled so
 		# the Event Log gets it once (then again only on change/recovery),
-		# while the file log still gets every occurrence.
+		# while the file log still gets every occurrence. `category` uses
+		# classify_exception() rather than the bare exception type name:
+		# nredarwin/webservice.py raises WebServiceError for nearly
+		# everything (network outage, HTTP errors, malformed JSON), so the
+		# type name alone would suppress e.g. a genuine outage -> 401
+		# transition as "the same failure" (#28 review).
 		fetch_msg = f"Darwin REST request failed for '{dev.name}': {e} - will retry later when server less busy"
-		if hasattr(logger, 'log_failure'):
-			logger.log_failure(f"darwin_fetch:{dev.id}", fetch_msg, category=type(e).__name__)
-		else:
+		if not _log_if_supported(logger, 'log_failure', f"darwin_fetch:{dev.id}", fetch_msg, category=classify_exception(e)):
 			errorHandler(f'WARNING ** {fetch_msg} **')
 		return False
 
-	if hasattr(logger, 'log_recovery'):
-		logger.log_recovery(f"darwin_fetch:{dev.id}", f"Darwin REST request working again for '{dev.name}'")
+	_log_if_supported(logger, 'log_recovery', f"darwin_fetch:{dev.id}", f"Darwin REST request working again for '{dev.name}'")
 
 	# Update station metadata on device
 	station_name = getattr(stationBoardDetails, 'location_name', 'Unknown Station')
@@ -493,17 +555,22 @@ def routeUpdate(dev, apiAccess, paths, logger, plugin_prefs=None):
 			# Update hash only after successful generation
 			dev.updateStateOnServer('image_content_hash', current_hash)
 			logger.debug(f"Updated content hash for '{dev.name}'")
-			# Clears any outstanding failure for this device and, if one was
-			# outstanding, announces the recovery once (#26).
-			logger.log_recovery(
-				f"image_gen:{dev.id}",
-				f"Image generation working again for '{dev.name}'"
-			)
+			# image_generator.py's per-style recovery already announces
+			# "<style> image generation working again" for whichever style
+			# had been failing (#28) -- clear this device-level rollup key
+			# silently so a whole-device recovery doesn't ALSO produce a
+			# second, less specific Event Log line.
+			_log_if_supported(logger, 'clear_failure', f"image_gen:{dev.id}")
 		else:
-			# Retried every cycle on a persistent failure - throttled so the
-			# Event Log gets it once (then again only on change/recovery),
-			# while the file log still gets every occurrence (#26).
-			logger.log_failure(
+			# Retried every cycle on a persistent failure. image_generator.py
+			# already logs a specific throttled ERROR per failing style (with
+			# stderr detail) -- this rollup would just be a second, less
+			# specific Event Log line for the same event, so it stays
+			# file-only. Still tracks device-level state (log_failure_quiet)
+			# so clear_device() sweeps it like any other failure key (#28
+			# review).
+			_log_if_supported(
+				logger, 'log_failure_quiet',
 				f"image_gen:{dev.id}",
 				f"Image generation failed for '{dev.name}', will retry next cycle"
 			)
@@ -803,11 +870,16 @@ class Plugin(indigo.PluginBase):
 			dev.updateStateOnServer('deviceActive', False)
 
 	def deviceStopComm(self, dev):
-		return
+		# Drop throttle state for this device (darwin_fetch/darwin_login/
+		# image_gen keys) so a failure recorded before it stopped doesn't
+		# suppress the same failure resurfacing once it's communicating
+		# again (#28).
+		self.plugin_logger.clear_device(dev.id)
 
 	def deviceDeleted(self, dev):
 		# Special routines for deleted devices
-		pass
+		super().deviceDeleted(dev)
+		self.plugin_logger.clear_device(dev.id)
 
 	########################################
 	# Sensor Action callback

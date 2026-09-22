@@ -10,6 +10,7 @@ from typing import List, Optional, Any
 import hashlib
 import constants
 from text_formatter import delayCalc
+from error_classification import classify_exception
 
 
 def errorHandler(error_msg: str):
@@ -165,8 +166,19 @@ def _generate_single_image(
 				# file-log detail only, never the Event Log and never a
 				# throttled failure.
 				logger.debug(f"{board_style.capitalize()} image generation stderr (non-fatal): {result.stderr.strip()}")
-			if use_throttle and hasattr(logger, 'clear_failure'):
-				logger.clear_failure(key)
+			if use_throttle:
+				# A prior failure for THIS style recovering gets its own
+				# Event Log line (e.g. "Classic image generation working
+				# again ...") -- log_recovery() is a no-op unless something
+				# was actually outstanding for `key`, so a clean run stays
+				# silent exactly like before (#28 review).
+				if hasattr(logger, 'log_recovery'):
+					logger.log_recovery(
+						key,
+						f"{board_style.capitalize()} image generation working again for '{device.name}'"
+					)
+				elif hasattr(logger, 'clear_failure'):
+					logger.clear_failure(key)
 			return True
 
 		elif result.returncode == 1:
@@ -204,7 +216,7 @@ def _generate_single_image(
 			logger.log_failure(
 				key,
 				f"Unexpected error generating {board_style} image for device '{device.name}': {e}",
-				category=f"exception:{type(e).__name__}",
+				category=classify_exception(e),
 			)
 		else:
 			logger.exception(f"Unexpected error generating {board_style} image for device '{device.name}'")

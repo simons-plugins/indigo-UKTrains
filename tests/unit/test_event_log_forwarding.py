@@ -182,3 +182,92 @@ class TestFailureThrottling:
         assert [r.levelno for r in event_log.records] == [
             logging.ERROR, logging.INFO, logging.ERROR,
         ]
+
+
+class TestLogFailureQuiet:
+    """log_failure_quiet() is for an aggregate/rollup line that would
+    otherwise duplicate a more specific ERROR a caller already logged via
+    log_failure() for a related key (#28 review) -- it must never reach
+    the Event Log, even on the first occurrence, but must still update
+    throttle state so clear_failure()/clear_device() see it."""
+
+    def test_never_reaches_event_log_even_on_first_occurrence(
+        self, plugin_logger, event_log, file_log
+    ):
+        plugin_logger.log_failure_quiet("image_gen:1", "aggregate failure")
+
+        assert event_log.records == []
+        assert len(file_log.records) == 1
+        assert file_log.records[0].levelno == logging.INFO
+
+    def test_updates_throttle_state_for_clear_failure(self, plugin_logger):
+        plugin_logger.log_failure_quiet("image_gen:1", "aggregate failure")
+
+        # clear_failure() only does anything if a key is actually tracked --
+        # this would be a no-op if log_failure_quiet() hadn't recorded it.
+        assert "image_gen:1" in plugin_logger._failure_state
+        plugin_logger.clear_failure("image_gen:1")
+        assert "image_gen:1" not in plugin_logger._failure_state
+
+
+class TestClearDevice:
+    """clear_device() drops all throttle state for one device id, so a
+    stale failure recorded before deviceStopComm/deviceDeleted doesn't
+    suppress the same failure resurfacing once the device is active again
+    (#28 review)."""
+
+    def test_clears_all_keys_for_the_device(self, plugin_logger, event_log):
+        plugin_logger.log_failure("darwin_fetch:1", "fetch failed")
+        plugin_logger.log_failure("darwin_login:1", "login failed")
+        plugin_logger.log_failure("image_gen:1", "image gen failed")
+        plugin_logger.log_failure("image_gen:1:classic", "classic failed")
+        plugin_logger.log_failure("darwin_fetch:2", "fetch failed")
+        assert len(event_log.records) == 5
+
+        plugin_logger.clear_device(1)
+
+        # Same failures for device 1 are "new" again.
+        plugin_logger.log_failure("darwin_fetch:1", "fetch failed")
+        plugin_logger.log_failure("darwin_login:1", "login failed")
+        plugin_logger.log_failure("image_gen:1", "image gen failed")
+        plugin_logger.log_failure("image_gen:1:classic", "classic failed")
+        assert len(event_log.records) == 9
+
+        # Device 2 was untouched -- its repeat is still throttled.
+        plugin_logger.log_failure("darwin_fetch:2", "fetch failed")
+        assert len(event_log.records) == 9
+
+    def test_does_not_match_another_device_whose_id_is_a_substring(
+        self, plugin_logger, event_log
+    ):
+        plugin_logger.log_failure("darwin_fetch:12", "fetch failed")
+        assert len(event_log.records) == 1
+
+        plugin_logger.clear_device(1)
+
+        # Still throttled -- clear_device(1) must not also clear device 12.
+        plugin_logger.log_failure("darwin_fetch:12", "fetch failed")
+        assert len(event_log.records) == 1
+
+    def test_clear_of_unknown_device_is_a_noop(self, plugin_logger, event_log):
+        plugin_logger.log_failure("darwin_fetch:1", "fetch failed")
+        plugin_logger.clear_device(999)  # never failed -- nothing to drop
+        plugin_logger.log_failure("darwin_fetch:1", "fetch failed")
+
+        # Still throttled -- clear_device(999) didn't touch device 1's key.
+        assert len(event_log.records) == 1
+
+    def test_failure_clear_device_same_failure_reaches_event_log_again(
+        self, plugin_logger, event_log
+    ):
+        """The exact scenario from the review: failure, clear_device, same
+        failure -> Event Log ERROR again."""
+        plugin_logger.log_failure("image_gen:5:classic", "PIL error")
+        assert len(event_log.records) == 1
+        assert event_log.records[0].levelno == logging.ERROR
+
+        plugin_logger.clear_device(5)
+
+        plugin_logger.log_failure("image_gen:5:classic", "PIL error")
+        assert len(event_log.records) == 2
+        assert event_log.records[1].levelno == logging.ERROR

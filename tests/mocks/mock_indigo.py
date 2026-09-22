@@ -71,6 +71,11 @@ class MockPluginBase:
         expected to call super().closedPrefsConfigUi(...)."""
         pass
 
+    def deviceDeleted(self, dev):
+        """Real indigo.PluginBase provides this as a no-op stub; plugins are
+        expected to call super().deviceDeleted(dev)."""
+        pass
+
     class StopThread(Exception):
         """Exception to signal thread stop"""
         pass
