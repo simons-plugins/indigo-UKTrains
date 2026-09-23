@@ -9,15 +9,7 @@ import constants
 from constants import TrainStatus
 from text_formatter import delayCalc, formatSpecials
 from darwin_api import _fetch_service_details
-
-
-def errorHandler(error_msg: str):
-	"""
-	Placeholder error handler for device_manager module.
-	Will use the actual errorHandler from plugin.py when called from plugin context.
-	"""
-	import sys
-	print(f"ERROR: {error_msg}", file=sys.stderr)
+from error_classification import classify_exception
 
 
 def _clear_device_states(dev: Any) -> None:
@@ -96,15 +88,26 @@ def _process_special_messages(board: Any, dev: Any, testing_mode: bool = False) 
 	return formatted_messages
 
 
-def _build_calling_points_string(service: Any) -> str:
+def _build_calling_points_string(
+	service: Any, dev: Any, logger: Any, failure_sink: Optional[list] = None
+) -> str:
 	"""Extract calling points from service and format as string.
 
 	Args:
 		service: ServiceDetails object from Darwin API
+		dev: Indigo device object (for the failure-throttle key and messages)
+		logger: PluginLogger for error reporting
+		failure_sink: optional list this call appends to on a calling-points
+			failure. Reports only failure/no-failure to the caller without
+			changing this function's return type -- this function is called
+			twice per train per cycle (device-state pass and image pass, #31),
+			so the caller aggregates across both passes and all trains itself
+			and decides recovery once, after its whole loop.
 
 	Returns:
 		Formatted calling points string (e.g., "Reading(10:15) Oxford(10:45)")
 	"""
+	failure_key = f"calling_points:{dev.id}"
 	try:
 		# Check if subsequent_calling_points exists and is not None
 		calling_points_list = getattr(service, 'subsequent_calling_points', [])
@@ -115,10 +118,20 @@ def _build_calling_points_string(service: Any) -> str:
 		arrival_times = [arrival.st for arrival in calling_points_list]
 		estimated_times = [arrival.et for arrival in calling_points_list]
 	except AttributeError as e:
-		errorHandler(f'WARNING ** SOAP failed on Calling Points access: {e} - try again later **')
+		# Retried every refresh cycle same as darwin_fetch/darwin_login, so
+		# throttle it the same way: file log gets every occurrence, Event
+		# Log gets one ERROR per distinct failure (#30).
+		logger.log_failure(
+			failure_key,
+			f"SOAP failed on Calling Points access for '{dev.name}': {e} - try again later",
+			category=classify_exception(e),
+		)
+		if failure_sink is not None:
+			failure_sink.append(True)
 		return ''
 
 	cp_string = ''
+	had_failure = False
 	for cp_index, cpoint in enumerate(calling_points):
 		try:
 			if 'On' in estimated_times[cp_index]:
@@ -126,9 +139,28 @@ def _build_calling_points_string(service: Any) -> str:
 			else:
 				cp_string += cpoint + '(' + estimated_times[cp_index] + ') '
 		except (AttributeError, IndexError):
-			errorHandler('WARNING - Estimated Time for calling point returned NULL - not critical')
+			# Expected Darwin behaviour (a calling point simply has no
+			# estimated time yet), not a failure -- file log only (#30).
+			logger.debug(
+				f"Estimated Time for calling point returned NULL for '{dev.name}' - not critical"
+			)
 		except Exception as e:
-			errorHandler(f'WARNING - Estimated Time for calling point - unknown error: {e} - advise developer')
+			had_failure = True
+			logger.log_failure(
+				failure_key,
+				f"Estimated Time for calling point - unknown error for '{dev.name}': {e} - advise developer",
+				category=classify_exception(e),
+			)
+
+	if had_failure and failure_sink is not None:
+		failure_sink.append(True)
+
+	# Recovery is no longer reported here: this function only ever sees one
+	# train, and is called twice per train (device-state pass and image
+	# pass), so a clean call for train B right after a failing call for
+	# train A would wrongly clear the device's failure state. The caller
+	# (_process_train_services) tracks failures across the whole cycle via
+	# `failure_sink` and calls log_recovery() once, after its loop (#31).
 
 	# Remove redundant "On time" text
 	cp_string = cp_string.replace(TrainStatus.ON_TIME.value, '')
@@ -141,7 +173,9 @@ def _update_train_device_states(
 	train_num: int,
 	destination: Any,
 	service: Optional[Any],
-	include_calling_points: bool
+	include_calling_points: bool,
+	logger: Any,
+	failure_sink: Optional[list] = None
 ) -> None:
 	"""Update all device states for a single train.
 
@@ -151,6 +185,9 @@ def _update_train_device_states(
 		destination: ServiceItem from station board
 		service: ServiceDetails from API
 		include_calling_points: Boolean for whether to include calling points
+		logger: PluginLogger for error reporting
+		failure_sink: optional list passed through to
+			_build_calling_points_string() -- see that function's docstring
 	"""
 	# Build state key prefixes
 	train_prefix = f'train{train_num}'
@@ -182,7 +219,7 @@ def _update_train_device_states(
 
 	# Process calling points if requested
 	if include_calling_points and service:
-		calling_points_str = _build_calling_points_string(service)
+		calling_points_str = _build_calling_points_string(service, dev, logger, failure_sink)
 		dev.updateStateOnServer(f'{train_prefix}Calling', value=calling_points_str)
 
 
@@ -192,6 +229,7 @@ def _process_train_services(
 	board: Any,
 	image_content: List[str],
 	include_calling_points: bool,
+	logger: Any,
 	word_length: int = 80
 ) -> bool:
 	"""Process all train services from station board.
@@ -205,6 +243,7 @@ def _process_train_services(
 		board: StationBoard object
 		image_content: List to append formatted train data to
 		include_calling_points: Boolean for whether to include calling points
+		logger: PluginLogger for error reporting
 		word_length: Maximum line length for image formatting
 
 	Returns:
@@ -215,6 +254,15 @@ def _process_train_services(
 
 	departures_found = False
 	services = getattr(board, 'train_services', [])
+
+	# One verdict per device per cycle (#31): _build_calling_points_string()
+	# is called twice per train (device-state pass below, then the image
+	# pass via _append_train_to_image) and no longer reports recovery
+	# itself, since a clean pass for one train must not clear the failure
+	# state left by a broken train elsewhere in the same cycle. Every call
+	# appends to this shared list on failure; recovery is decided once,
+	# after the whole loop, from whether anything landed in it.
+	calling_points_failures: list = []
 
 	# Debug logging removed - use plugin instance logger instead
 
@@ -228,9 +276,19 @@ def _process_train_services(
 		departures_found = True
 
 		# Update device states for this train
-		_update_train_device_states(dev, train_num, destination, service, include_calling_points)
+		_update_train_device_states(
+			dev, train_num, destination, service, include_calling_points, logger, calling_points_failures
+		)
 
 		# Build image content for this train
-		_append_train_to_image(image_content, destination, include_calling_points, service, word_length)
+		_append_train_to_image(
+			image_content, destination, include_calling_points, service, dev, logger, word_length,
+			failure_sink=calling_points_failures
+		)
+
+	if include_calling_points and not calling_points_failures:
+		# No-op unless `calling_points:{dev.id}` had an outstanding failure --
+		# a clean cycle stays silent exactly like before (#30).
+		logger.log_recovery(f"calling_points:{dev.id}", f"Calling points working again for '{dev.name}'")
 
 	return departures_found

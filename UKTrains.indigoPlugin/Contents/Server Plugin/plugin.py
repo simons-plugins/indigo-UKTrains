@@ -28,7 +28,7 @@
 ###############################################################################################
 
 # Get system modules
-import os, sys, time, datetime, traceback, re
+import os, sys, time, datetime, re
 import tempfile
 import subprocess
 import threading
@@ -262,37 +262,6 @@ sys.path.append(_MODULE_PYPATH)
 _MODULE_PYPATH = _MODULE_PYPATH + '/'
 
 
-# ========== Error Handler (Module-level function) ==========
-# Note: This function remains at module level for backward compatibility
-# It will be refactored in a future phase
-
-def errorHandler(error_msg: str):
-	"""
-	Legacy error handler for backward compatibility.
-	Logs to plugin logger if available, otherwise falls back to print.
-	"""
-	# Try to get logger from global plugin instance
-	try:
-		if hasattr(sys.modules['__main__'], 'plugin'):
-			plugin = sys.modules['__main__'].plugin
-			if hasattr(plugin, 'plugin_logger'):
-				# Log the exception traceback if available, otherwise just error
-				exc_info = sys.exc_info()
-				if exc_info[0] is not None:
-					plugin.plugin_logger.exception(error_msg)
-				else:
-					plugin.plugin_logger.error(error_msg)
-				return
-		# Fallback: print to stderr
-		print(f"ERROR: {error_msg}", file=sys.stderr)
-		exc_info = sys.exc_info()
-		if exc_info[0] is not None:
-			traceback.print_exception(*exc_info, limit=2, file=sys.stderr)
-	except Exception:
-		# Last resort: just print
-		print(f"ERROR: {error_msg}", file=sys.stderr)
-
-
 # ========== Retry Logic with Exponential Backoff ==========
 
 # ========== Darwin API Functions (extracted to darwin_api.py) ==========
@@ -480,6 +449,7 @@ def routeUpdate(dev, apiAccess, paths, logger, plugin_prefs=None):
 		stationBoardDetails,
 		image_content,
 		include_calling_points,
+		logger,
 		word_length=80
 	)
 
@@ -1324,13 +1294,11 @@ class Plugin(indigo.PluginBase):
 		except (IOError, OSError) as e:
 			# Couldn't find stations file - advise user and exit
 			self.plugin_logger.error(f"*** Could not open station code file {station_codes_file}: {e} ***")
-			errorHandler(f'CRITICAL FAILURE ** Station Code file missing - {station_codes_file}')
 			sys.exit(1)
 
 		if len(local_station_dict) == 0:
 			# Dictionary is empty - advise user and exit
-			indigo.server.log(f'*** Station File is empty - please reinstall {station_codes_file} ***')
-			errorHandler(f'CRITICAL FAILURE ** Station code file empty - {station_codes_file}')
+			self.plugin_logger.error(f'*** Station File is empty - please reinstall {station_codes_file} ***')
 			sys.exit(1)
 
 		return stationList
@@ -1363,13 +1331,11 @@ class Plugin(indigo.PluginBase):
 		except (IOError, OSError) as e:
 			# Couldn't find stations file - advise user and exit
 			self.plugin_logger.error(f"*** Could not open station code file {station_codes_file}: {e} ***")
-			errorHandler(f'CRITICAL FAILURE ** Station Code file missing - {station_codes_file}')
 			sys.exit(1)
 
 		if len(localStationDict) == 0:
 			# Dictionary is empty - advise user and exit
 			self.plugin_logger.error(f'*** Station File is empty - please reinstall {station_codes_file} ***')
-			errorHandler(f'CRITICAL FAILURE ** Station code file empty - {station_codes_file}')
 			sys.exit(1)
 
 		return localStationDict
