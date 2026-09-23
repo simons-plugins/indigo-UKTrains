@@ -13,15 +13,6 @@ from text_formatter import delayCalc
 from error_classification import classify_exception
 
 
-def errorHandler(error_msg: str):
-	"""
-	Placeholder error handler for image_generator module.
-	Will use the actual errorHandler from plugin.py when called from plugin context.
-	"""
-	import sys
-	print(f"ERROR: {error_msg}", file=sys.stderr)
-
-
 def compute_board_content_hash(
 	board_text_path: Path,
 	parameters_file_path: Path
@@ -343,7 +334,8 @@ def _append_train_to_image(
 	service: Optional[Any],
 	dev: Any,
 	logger: Any,
-	word_length: int = 80
+	word_length: int = 80,
+	failure_sink: Optional[list] = None
 ) -> None:
 	"""Add train service data to image content array.
 
@@ -355,6 +347,8 @@ def _append_train_to_image(
 		dev: Indigo device object (for the failure-throttle key and messages)
 		logger: PluginLogger for error reporting
 		word_length: Maximum line length for wrapping
+		failure_sink: optional list passed through to
+			_build_calling_points_string() -- see that function's docstring
 	"""
 	# Import here to avoid circular dependency
 	from device_manager import _build_calling_points_string
@@ -402,7 +396,7 @@ def _append_train_to_image(
 
 	# Add calling points if requested
 	if include_calling_points and service:
-		cp_string = _build_calling_points_string(service, dev, logger)
+		cp_string = _build_calling_points_string(service, dev, logger, failure_sink)
 		if len(cp_string) > 0:
 			# Guard against invalid word_length to prevent infinite loops
 			safe_word_length = max(20, word_length)  # Minimum 20 chars for safety
