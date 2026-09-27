@@ -191,6 +191,35 @@ class TestPersistentFailureThrottling:
             logging.ERROR, logging.INFO, logging.ERROR,
         ]
 
+    def test_recovery_under_indigo_does_not_turn_successes_into_failures(
+        self, plugin_logger, event_log, paths, monkeypatch
+    ):
+        """The user-visible symptom from PR #32: under Indigo (no __file__),
+        every successful render after one failure raised inside
+        log_recovery(), was caught by the broad except, and was logged as a
+        fresh "Unexpected error" ERROR each cycle. Successes must stay
+        successes and produce exactly one recovery line."""
+        monkeypatch.delattr(plugin, "__file__")
+        device = make_device()
+
+        with patch("image_generator.subprocess.run") as run_mock:
+            run_mock.return_value = _run_result(2, stderr="Traceback...")
+            _generate_single_image(
+                paths.plugin_root, paths.image_filename, paths.text_filename,
+                paths.parameters_filename, True, "classic", device, plugin_logger,
+            )
+            run_mock.return_value = _run_result(0)
+            results = [
+                _generate_single_image(
+                    paths.plugin_root, paths.image_filename, paths.text_filename,
+                    paths.parameters_filename, True, "classic", device, plugin_logger,
+                )
+                for _ in range(3)
+            ]
+
+        assert results == [True, True, True]
+        assert [r.levelno for r in event_log.records] == [logging.ERROR, logging.INFO]
+
     def test_success_with_no_prior_failure_emits_no_recovery_line(
         self, plugin_logger, event_log, paths
     ):
