@@ -212,7 +212,7 @@ class PluginLogger:
 		self.logger.info(message)
 		if self._event_log_handler is not None:
 			record = self.logger.makeRecord(
-				self.logger.name, logging.INFO, __file__, 0, message, (), None
+				self.logger.name, logging.INFO, "plugin.py", 0, message, (), None
 			)
 			self._event_log_handler.handle(record)
 
