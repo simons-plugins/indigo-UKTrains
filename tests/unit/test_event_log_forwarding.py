@@ -174,6 +174,19 @@ class TestFailureThrottling:
         assert event_log.records[1].levelno == logging.INFO
         assert event_log.records[1].getMessage() == "image generation working again for 'dev-1'"
 
+    def test_recovery_works_without_dunder_file(self, plugin_logger, event_log, monkeypatch):
+        """Indigo exec()s plugin.py without defining __file__, so a
+        recovery line that referenced it raised NameError in production
+        -- the "working again" path crashed every cycle after the first
+        Darwin hiccup. pytest imports plugin as a normal module, so
+        remove __file__ to match the real host."""
+        monkeypatch.delattr(plugin, "__file__")
+
+        plugin_logger.log_failure("dev-1", "image generation failed")
+        plugin_logger.log_recovery("dev-1", "image generation working again")
+
+        assert [r.levelno for r in event_log.records] == [logging.ERROR, logging.INFO]
+
     def test_recovery_is_emitted_only_once(self, plugin_logger, event_log):
         plugin_logger.log_failure("dev-1", "image generation failed")
         plugin_logger.log_recovery("dev-1", "image generation working again")
