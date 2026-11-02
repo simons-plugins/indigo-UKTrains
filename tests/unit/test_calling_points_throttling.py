@@ -152,6 +152,47 @@ class TestNullEstimatedTimeIsNonCritical:
 
 
 @pytest.mark.unit
+class TestNullEstimatedTimeRendersScheduledTime:
+    """Darwin omits `et` on a calling point the service has already called
+    at (it carries `at` instead) or that is cancelled at that location, so
+    the JSON-backed CallingPoint.et comes back None. `'On' in None` raised
+    TypeError, which only the catch-all saw -- so every such train produced
+    "Estimated Time for calling point - unknown error ... argument of type
+    'NoneType' is not iterable - advise developer" in the Event Log, about
+    once per train all evening (Walton-Waterloo, 2026-11-02). It is
+    expected data, not a failure: render the scheduled time, log nothing."""
+
+    def test_none_et_falls_back_to_scheduled_time_and_logs_nothing(
+        self, plugin_logger, event_log, file_log
+    ):
+        device = make_device()
+        passed = make_calling_point("Surbiton", st="10:05", et=None)
+        ok = make_calling_point("Reading", st="10:15", et="On time")
+        service = SimpleNamespace(subsequent_calling_points=[passed, ok])
+
+        result = _build_calling_points_string(service, device, plugin_logger)
+
+        assert result == "Surbiton(10:05) Reading(10:15) "
+        assert event_log.records == []
+        assert all(r.levelno < logging.WARNING for r in file_log.records)
+
+    def test_none_et_is_not_reported_as_a_failure_to_the_caller(
+        self, plugin_logger, event_log
+    ):
+        """A None `et` must not feed the per-cycle failure aggregation
+        either, or _process_train_services would never log recovery."""
+        device = make_device()
+        service = SimpleNamespace(
+            subsequent_calling_points=[make_calling_point("Surbiton", st="10:05", et=None)]
+        )
+        sink = []
+
+        _build_calling_points_string(service, device, plugin_logger, failure_sink=sink)
+
+        assert sink == []
+
+
+@pytest.mark.unit
 class TestUnknownErrorPerCallingPoint:
     """Line ~131 (was): an unexpected exception building one calling
     point's text (e.g. a None arrival time on a service reporting 'On

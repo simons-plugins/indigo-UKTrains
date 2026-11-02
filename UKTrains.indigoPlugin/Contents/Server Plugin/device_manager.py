@@ -134,10 +134,14 @@ def _build_calling_points_string(
 	had_failure = False
 	for cp_index, cpoint in enumerate(calling_points):
 		try:
-			if 'On' in estimated_times[cp_index]:
+			estimated = estimated_times[cp_index]
+			# Darwin omits `et` (so it reads None) on a calling point the
+			# service has already called at or is cancelled at -- expected
+			# data, not an error: show the scheduled time, as for 'On time'.
+			if estimated is None or 'On' in estimated:
 				cp_string += cpoint + '(' + arrival_times[cp_index] + ') '
 			else:
-				cp_string += cpoint + '(' + estimated_times[cp_index] + ') '
+				cp_string += cpoint + '(' + estimated + ') '
 		except (AttributeError, IndexError):
 			# Expected Darwin behaviour (a calling point simply has no
 			# estimated time yet), not a failure -- file log only (#30).
