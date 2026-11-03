@@ -114,10 +114,10 @@ def _build_calling_points_string(
 		if calling_points_list is None:
 			calling_points_list = []
 
-		calling_points = [cp.location_name for cp in calling_points_list]
-		arrival_times = [arrival.st for arrival in calling_points_list]
-		estimated_times = [arrival.et for arrival in calling_points_list]
-		actual_times = [getattr(arrival, 'at', None) for arrival in calling_points_list]
+		points = [
+			(cp.location_name, cp.st, cp.et, getattr(cp, 'at', None), bool(getattr(cp, 'is_cancelled', False)))
+			for cp in calling_points_list
+		]
 	except AttributeError as e:
 		# Retried every refresh cycle same as darwin_fetch/darwin_login, so
 		# throttle it the same way: file log gets every occurrence, Event
@@ -133,25 +133,27 @@ def _build_calling_points_string(
 
 	cp_string = ''
 	had_failure = False
-	for cp_index, cpoint in enumerate(calling_points):
+	for name, st, et, at, cancelled in points:
 		try:
-			# Once the service has called at a point Darwin replaces `et`
-			# with `at` (same shape: 'On time' or an HH:MM actual), so `et`
-			# reads None for the first stops of a train that has just left
-			# the board station. Expected data, not an error.
-			estimated = estimated_times[cp_index]
-			if estimated is None:
-				estimated = actual_times[cp_index]
-			if estimated is None or 'On' in estimated:
-				cp_string += cpoint + '(' + arrival_times[cp_index] + ') '
+			# A point cancelled at that location carries `isCancelled`; the
+			# train will skip it, so render it as Cancelled rather than let
+			# the board show it as a normal call (#35). Otherwise, once the
+			# service has called at a point Darwin replaces `et` with `at`
+			# (same shape: 'On time' or an HH:MM actual), so `et` reads None
+			# for the first stops of a train that has just left the board
+			# station. Expected data, not an error: fall back to `at`, then
+			# to the scheduled time.
+			if cancelled:
+				shown = TrainStatus.CANCELLED.value
+			elif et is not None:
+				shown = et
+			elif at is not None:
+				shown = at
 			else:
-				cp_string += cpoint + '(' + estimated + ') '
-		except (AttributeError, IndexError):
-			# Expected Darwin behaviour (a calling point simply has no
-			# estimated time yet), not a failure -- file log only (#30).
-			logger.debug(
-				f"Estimated Time for calling point returned NULL for '{dev.name}' - not critical"
-			)
+				shown = st
+			if 'On' in shown:
+				shown = st
+			cp_string += name + '(' + shown + ') '
 		except Exception as e:
 			had_failure = True
 			logger.log_failure(

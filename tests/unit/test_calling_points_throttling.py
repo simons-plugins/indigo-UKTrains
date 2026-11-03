@@ -24,6 +24,14 @@ ERROR/INFO flap every cycle, forever. Recovery is now decided once per
 device per cycle by _process_train_services(), after it has seen every
 train and both passes -- see TestRecoveryScopedToWholeCycle below.
 
+Follow-up (#35, #36): a calling point cancelled at that location carries
+Darwin's per-point `isCancelled` flag and is now rendered as Name(Cancelled)
+rather than as a normal stop with its scheduled/estimated time. The per-point
+loop also now reads one list of per-point tuples, so the old
+(AttributeError, IndexError) branch -- unreachable with list-backed data,
+and wrongly documented as the "no estimated time" handler -- was removed;
+the catch-all is the only per-point handler.
+
 Same RecordingHandler double-attachment pattern as
 test_event_log_forwarding.py / test_image_gen_throttling.py: PluginLogger's
 internal logger has propagate=False, so caplog's root-attached handler
@@ -39,7 +47,9 @@ import pytest
 
 import plugin
 from device_manager import _build_calling_points_string, _process_train_services
+from mocks.mock_darwin import calling_point_dict
 from mocks.mock_indigo import RecordingHandler, create_mock_device
+from nredarwin.webservice import CallingPoint
 
 
 @pytest.fixture
@@ -59,8 +69,10 @@ def make_device(dev_id=1, name="Test Device"):
     return SimpleNamespace(id=dev_id, name=name)
 
 
-def make_calling_point(location_name, st="10:00", et="On time", at=None):
-    return SimpleNamespace(location_name=location_name, st=st, et=et, at=at)
+def make_calling_point(location_name, st="10:00", et="On time", at=None, is_cancelled=False):
+    return SimpleNamespace(
+        location_name=location_name, st=st, et=et, at=at, is_cancelled=is_cancelled
+    )
 
 
 @pytest.mark.unit
@@ -107,33 +119,26 @@ class TestSoapAccessFailureThrottling:
 
 @pytest.mark.unit
 class TestNullEstimatedTimeIsNonCritical:
-    """Line ~129 (was): a calling point missing its estimated/arrival time
-    is expected Darwin behaviour, not a failure -- DEBUG/file-only, never
-    reaches the Event Log (#30)."""
+    """The function reads each calling point once, so a one-shot iterable
+    (generator) is fine. The old (AttributeError, IndexError) per-point
+    branch was unreachable with list-backed data and has been removed
+    (#36); a missing estimated time is handled by falling back to `at`
+    then the scheduled time, see TestNullEstimatedTimeRendersScheduledTime."""
 
-    def test_debug_only_nothing_at_warning_or_above(self, plugin_logger, event_log, file_log):
+    def test_generator_source_renders_every_point(self, plugin_logger, event_log, file_log):
         device = make_device()
 
-        # A generator (rather than a list) for subsequent_calling_points:
-        # _build_calling_points_string iterates it three times to build
-        # calling_points/arrival_times/estimated_times, so the 2nd and 3rd
-        # passes come back empty once the generator is exhausted --
-        # reproducing Darwin handing back a calling point whose arrival/
-        # estimated time can't be read for that index (IndexError).
         def points():
-            yield make_calling_point("Slough")
-            yield make_calling_point("Reading")
+            yield make_calling_point("Slough", st="10:00")
+            yield make_calling_point("Reading", st="10:15")
 
         service = SimpleNamespace(subsequent_calling_points=points())
 
         result = _build_calling_points_string(service, device, plugin_logger)
 
-        assert result == ''
+        assert result == "Slough(10:00) Reading(10:15) "
         assert event_log.records == []
         assert all(r.levelno < logging.WARNING for r in file_log.records)
-        debug_records = [r for r in file_log.records if "not critical" in r.getMessage()]
-        assert len(debug_records) == 2
-        assert all(r.levelno == logging.DEBUG for r in debug_records)
 
     def test_success_with_no_prior_failure_emits_no_recovery_line(
         self, plugin_logger, event_log
@@ -232,6 +237,77 @@ class TestNullEstimatedTimeRendersScheduledTime:
         _build_calling_points_string(service, device, plugin_logger, failure_sink=sink)
 
         assert sink == []
+
+
+@pytest.mark.unit
+class TestCancelledCallingPointRendersCancelled:
+    """GitHub issue #35: Darwin flags a stop the train will skip with a
+    per-point `isCancelled`. CallingPoint never exposed it, so the stop
+    rendered with its scheduled/estimated time as if it were a normal
+    call. It must render as Name(Cancelled), ahead of et/at/st."""
+
+    def test_cancelled_point_with_no_et_renders_cancelled_not_scheduled_time(
+        self, plugin_logger, event_log, file_log
+    ):
+        device = make_device()
+        cancelled = make_calling_point("Surbiton", st="10:05", et=None, at=None, is_cancelled=True)
+        ok = make_calling_point("Reading", st="10:15", et="On time")
+        service = SimpleNamespace(subsequent_calling_points=[cancelled, ok])
+
+        result = _build_calling_points_string(service, device, plugin_logger)
+
+        assert result == "Surbiton(Cancelled) Reading(10:15) "
+        assert event_log.records == []
+        assert all(r.levelno < logging.WARNING for r in file_log.records)
+
+    def test_cancelled_point_wins_over_et_and_at(self, plugin_logger):
+        device = make_device()
+        with_et = make_calling_point("Surbiton", st="10:05", et="10:09", at=None, is_cancelled=True)
+        with_at = make_calling_point("Surbiton", st="10:05", et=None, at="10:09", is_cancelled=True)
+
+        assert _build_calling_points_string(
+            SimpleNamespace(subsequent_calling_points=[with_et]), device, plugin_logger
+        ) == "Surbiton(Cancelled) "
+        assert _build_calling_points_string(
+            SimpleNamespace(subsequent_calling_points=[with_at]), device, plugin_logger
+        ) == "Surbiton(Cancelled) "
+
+    def test_cancelled_point_is_not_reported_as_a_failure(self, plugin_logger, event_log):
+        device = make_device()
+        service = SimpleNamespace(subsequent_calling_points=[
+            make_calling_point("Surbiton", st="10:05", et=None, is_cancelled=True)
+        ])
+        sink = []
+
+        _build_calling_points_string(service, device, plugin_logger, failure_sink=sink)
+
+        assert sink == []
+        assert event_log.records == []
+
+    def test_real_calling_point_from_darwin_json(self, plugin_logger, event_log):
+        """Pins the real JSON wrapper, with the `et` key absent."""
+        device = make_device()
+        service = SimpleNamespace(subsequent_calling_points=[
+            CallingPoint(calling_point_dict("Surbiton", "10:05", et=None, is_cancelled=True)),
+            CallingPoint(calling_point_dict("Reading", "10:15")),
+        ])
+
+        result = _build_calling_points_string(service, device, plugin_logger)
+
+        assert result == "Surbiton(Cancelled) Reading(10:15) "
+        assert event_log.records == []
+
+    def test_real_calling_point_with_et_absent_and_at_present(self, plugin_logger, event_log):
+        """The payload captured live 2026-11-02: no `et`, at='On time'."""
+        device = make_device()
+        raw = calling_point_dict("Hersham", "20:49", et=None)
+        raw["at"] = "On time"
+        service = SimpleNamespace(subsequent_calling_points=[CallingPoint(raw)])
+
+        result = _build_calling_points_string(service, device, plugin_logger)
+
+        assert result == "Hersham(20:49) "
+        assert event_log.records == []
 
 
 @pytest.mark.unit

@@ -339,3 +339,5 @@ class CallingPoint(_JsonBacked):
     def et(self): return self._data.get('et')
     @property
     def st(self): return self._data.get('st')
+    @property
+    def is_cancelled(self): return bool(self._data.get('isCancelled'))
