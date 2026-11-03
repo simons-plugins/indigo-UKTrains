@@ -17,15 +17,18 @@ from nredarwin.webservice import StationBoard, ServiceItem, CallingPoint
 # Calling-point and service factories (return raw dicts)
 # ---------------------------------------------------------------------------
 
-def calling_point_dict(location_name: str, st: str, et: str = "On time",
-                       crs: str = "") -> dict:
-    return {
+def calling_point_dict(location_name: str, st: str, et: Optional[str] = "On time",
+                       crs: str = "", is_cancelled: bool = False) -> dict:
+    data = {
         "locationName": location_name,
         "crs": crs,
         "st": st,
-        "et": et,
-        "isCancelled": False,
+        "isCancelled": is_cancelled,
     }
+    if et is not None:
+        # Real Darwin omits "et" once the service has called at the point.
+        data["et"] = et
+    return data
 
 
 def service_dict(destination_name: str,
