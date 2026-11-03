@@ -59,8 +59,8 @@ def make_device(dev_id=1, name="Test Device"):
     return SimpleNamespace(id=dev_id, name=name)
 
 
-def make_calling_point(location_name, st="10:00", et="On time"):
-    return SimpleNamespace(location_name=location_name, st=st, et=et)
+def make_calling_point(location_name, st="10:00", et="On time", at=None):
+    return SimpleNamespace(location_name=location_name, st=st, et=et, at=at)
 
 
 @pytest.mark.unit
@@ -149,6 +149,89 @@ class TestNullEstimatedTimeIsNonCritical:
         _build_calling_points_string(service, device, plugin_logger)
 
         assert event_log.records == []
+
+
+@pytest.mark.unit
+class TestNullEstimatedTimeRendersScheduledTime:
+    """Once a service has called at a point, Darwin drops `et` and sends
+    `at` instead (same shape: 'On time' or an HH:MM actual), so the
+    JSON-backed CallingPoint.et reads None for the first stops of a train
+    that has just left the board station. Captured live 2026-11-02 20:49
+    on Walton-Waterloo: Hersham st='20:49', no `et`, at='On time',
+    isCancelled=False. `'On' in None` raised TypeError, which only the
+    catch-all saw -- so every departing train produced "Estimated Time
+    for calling point - unknown error ... argument of type 'NoneType' is
+    not iterable - advise developer" in the Event Log. It is expected
+    data, not a failure: use `at` as the estimate, log nothing."""
+
+    def test_none_et_with_on_time_at_renders_scheduled_time_and_logs_nothing(
+        self, plugin_logger, event_log, file_log
+    ):
+        device = make_device()
+        passed = make_calling_point("Hersham", st="20:49", et=None, at="On time")
+        ok = make_calling_point("Esher", st="20:52", et="On time")
+        service = SimpleNamespace(subsequent_calling_points=[passed, ok])
+
+        result = _build_calling_points_string(service, device, plugin_logger)
+
+        assert result == "Hersham(20:49) Esher(20:52) "
+        assert event_log.records == []
+        assert all(r.levelno < logging.WARNING for r in file_log.records)
+
+    def test_none_et_with_late_at_renders_the_actual_time(self, plugin_logger, event_log):
+        """A late actual is the better answer than the scheduled time."""
+        device = make_device()
+        passed = make_calling_point("Hersham", st="20:49", et=None, at="20:53")
+        service = SimpleNamespace(subsequent_calling_points=[passed])
+
+        result = _build_calling_points_string(service, device, plugin_logger)
+
+        assert result == "Hersham(20:53) "
+        assert event_log.records == []
+
+    def test_none_et_and_none_at_falls_back_to_scheduled_time(self, plugin_logger, event_log):
+        device = make_device()
+        service = SimpleNamespace(
+            subsequent_calling_points=[make_calling_point("Surbiton", st="10:05", et=None)]
+        )
+
+        result = _build_calling_points_string(service, device, plugin_logger)
+
+        assert result == "Surbiton(10:05) "
+        assert event_log.records == []
+
+    def test_none_et_and_none_st_is_still_reported_as_a_failure(
+        self, plugin_logger, event_log
+    ):
+        """Adversarial guard: making `et` None benign must not swallow a
+        calling point with no time at all -- that is still a real failure."""
+        device = make_device()
+        service = SimpleNamespace(
+            subsequent_calling_points=[make_calling_point("Surbiton", st=None, et=None)]
+        )
+        sink = []
+
+        result = _build_calling_points_string(service, device, plugin_logger, failure_sink=sink)
+
+        assert result == ''
+        assert sink == [True]
+        assert len(event_log.records) == 1
+        assert event_log.records[0].levelno == logging.ERROR
+
+    def test_none_et_is_not_reported_as_a_failure_to_the_caller(
+        self, plugin_logger, event_log
+    ):
+        """A None `et` must not feed the per-cycle failure aggregation
+        either, or _process_train_services would never log recovery."""
+        device = make_device()
+        service = SimpleNamespace(
+            subsequent_calling_points=[make_calling_point("Surbiton", st="10:05", et=None)]
+        )
+        sink = []
+
+        _build_calling_points_string(service, device, plugin_logger, failure_sink=sink)
+
+        assert sink == []
 
 
 @pytest.mark.unit

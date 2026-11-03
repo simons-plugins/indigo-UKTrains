@@ -117,6 +117,7 @@ def _build_calling_points_string(
 		calling_points = [cp.location_name for cp in calling_points_list]
 		arrival_times = [arrival.st for arrival in calling_points_list]
 		estimated_times = [arrival.et for arrival in calling_points_list]
+		actual_times = [getattr(arrival, 'at', None) for arrival in calling_points_list]
 	except AttributeError as e:
 		# Retried every refresh cycle same as darwin_fetch/darwin_login, so
 		# throttle it the same way: file log gets every occurrence, Event
@@ -134,10 +135,17 @@ def _build_calling_points_string(
 	had_failure = False
 	for cp_index, cpoint in enumerate(calling_points):
 		try:
-			if 'On' in estimated_times[cp_index]:
+			# Once the service has called at a point Darwin replaces `et`
+			# with `at` (same shape: 'On time' or an HH:MM actual), so `et`
+			# reads None for the first stops of a train that has just left
+			# the board station. Expected data, not an error.
+			estimated = estimated_times[cp_index]
+			if estimated is None:
+				estimated = actual_times[cp_index]
+			if estimated is None or 'On' in estimated:
 				cp_string += cpoint + '(' + arrival_times[cp_index] + ') '
 			else:
-				cp_string += cpoint + '(' + estimated_times[cp_index] + ') '
+				cp_string += cpoint + '(' + estimated + ') '
 		except (AttributeError, IndexError):
 			# Expected Darwin behaviour (a calling point simply has no
 			# estimated time yet), not a failure -- file log only (#30).
