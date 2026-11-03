@@ -83,8 +83,8 @@ class TestSoapAccessFailureThrottling:
 
     def test_first_failure_reaches_event_log_as_error(self, plugin_logger, event_log, file_log):
         device = make_device()
-        # object() has neither .location_name nor .st/.et -- the list
-        # comprehensions inside the outer try raise AttributeError.
+        # object() has neither .location_name nor .st/.et -- the per-point
+        # comprehension inside the outer try raises AttributeError.
         service = SimpleNamespace(subsequent_calling_points=[object()])
 
         result = _build_calling_points_string(service, device, plugin_logger)
@@ -118,7 +118,7 @@ class TestSoapAccessFailureThrottling:
 
 
 @pytest.mark.unit
-class TestNullEstimatedTimeIsNonCritical:
+class TestSinglePassIteration:
     """The function reads each calling point once, so a one-shot iterable
     (generator) is fine. The old (AttributeError, IndexError) per-point
     branch was unreachable with list-backed data and has been removed
@@ -329,7 +329,12 @@ class TestUnknownErrorPerCallingPoint:
 
         assert len(event_log.records) == 1
         assert event_log.records[0].levelno == logging.ERROR
-        assert "unknown error" in event_log.records[0].getMessage()
+        message = event_log.records[0].getMessage()
+        assert "unknown error" in message
+        # The message must say which stop failed and what it carried, or the
+        # next "argument of type 'NoneType'" report is undiagnosable (#34).
+        assert "'Slough'" in message
+        assert "st=None" in message
         # The broken calling point contributed nothing, but the good one
         # still made it into the string.
         assert "Slough" not in result

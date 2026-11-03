@@ -158,7 +158,8 @@ def _build_calling_points_string(
 			had_failure = True
 			logger.log_failure(
 				failure_key,
-				f"Estimated Time for calling point - unknown error for '{dev.name}': {e} - advise developer",
+				f"Calling point {name!r} - unknown error for '{dev.name}' "
+				f"(st={st!r}, et={et!r}, at={at!r}, cancelled={cancelled}): {e} - advise developer",
 				category=classify_exception(e),
 			)
 
